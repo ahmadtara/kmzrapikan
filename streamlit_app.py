@@ -66,11 +66,16 @@ def classify_poles(tree):
 
     # ambil semua POLE global
     poles = []
-    for pm in doc.findall(".//kml:Folder[kml:name='POLE']//kml:Placemark", ns):
-        name = pm.find("kml:name", ns).text
-        geom = extract_geometry(pm)
-        if isinstance(geom, Point):
-            poles.append((name, geom))
+    for folder in doc.findall(".//kml:Folder", ns):
+    fname = folder.find("kml:name", ns)
+    if fname is not None and "POLE" in fname.text.upper():
+        for pm in folder.findall(".//kml:Placemark", ns):
+            name_el = pm.find("kml:name", ns)
+            name = name_el.text if name_el is not None else "Unnamed"
+            geom = extract_geometry(pm)
+            if isinstance(geom, Point):
+                poles.append((name, geom))
+
 
     result = {}
     # loop setiap LINE utama (A, B, C, D)
