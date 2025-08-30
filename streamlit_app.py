@@ -2,7 +2,6 @@ import streamlit as st
 import zipfile
 import os
 import tempfile
-import simplekml
 from lxml import etree as ET
 from shapely.geometry import Point, Polygon
 
