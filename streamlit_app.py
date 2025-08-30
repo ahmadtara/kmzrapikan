@@ -9,7 +9,8 @@ st.title("📌 KMZ Tools")
 
 menu = st.sidebar.radio("Pilih Menu", [
     "Rapikan HP ke Boundary",
-    "Generate Kotak Kapling"
+    "Generate Kotak Kapling",
+    "Rename NN di HP"
 ])
 
 # =========================
@@ -117,13 +118,12 @@ if menu == "Rapikan HP ke Boundary":
 
 
 
-# =========================
-# MENU 2: Generate Kotak Kapling
-# =========================
+# MENU 2: Generate Kotak Kapling dari Titik HP
+# ============================================
 elif menu == "Generate Kotak Kapling":
-    st.subheader("📐 Buat Kotak Rumah/Kapling dari Boundary")
+    st.subheader("📐 Buat Kotak Kapling dari Titik HP")
 
-    uploaded_file = st.file_uploader("Upload file KML/KMZ", type=["kml", "kmz"])
+    uploaded_file = st.file_uploader("Upload file KML/KMZ (titik HP)", type=["kml", "kmz"])
 
     size_x = st.number_input("Ukuran X (derajat)", value=0.00005, format="%.6f")
     size_y = st.number_input("Ukuran Y (derajat)", value=0.00005, format="%.6f")
@@ -151,49 +151,53 @@ elif menu == "Generate Kotak Kapling":
         root = tree.getroot()
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-        # Cari polygon boundary pertama
-        polygon_el = root.find(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing/kml:coordinates", ns)
-        if polygon_el is None:
-            st.error("❌ Tidak ada Polygon di file KML.")
+        # Cari semua titik (Point)
+        placemarks = root.findall(".//kml:Placemark", ns)
+        points = []
+        for pm in placemarks:
+            name_el = pm.find("kml:name", ns)
+            coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
+            if coords_el is not None:
+                lon, lat, *_ = map(float, coords_el.text.strip().split(","))
+                name = name_el.text if name_el is not None else "NN"
+                points.append((lon, lat, name))
+
+        if len(points) == 0:
+            st.error("❌ Tidak ada titik Point di file KML.")
         else:
-            coords_text = polygon_el.text.strip()
-            coords = []
-            for c in coords_text.split():
-                lon, lat, *_ = map(float, c.split(","))
-                coords.append((lon, lat))
-            boundary = Polygon(coords)
-
-            if st.button("Generate Kotak dari Boundary"):
-                minx, miny, maxx, maxy = boundary.bounds
-
-                # Buat grid kotak
+            if st.button("Generate Kotak dari Titik"):
+                used = set()
                 kotak_list = []
-                x = minx
-                while x < maxx:
-                    y = miny
-                    while y < maxy:
-                        rect = Polygon([
-                            (x, y),
-                            (x, y + size_y),
-                            (x + size_x, y + size_y),
-                            (x + size_x, y),
-                            (x, y)
-                        ])
-                        if boundary.intersects(rect):
-                            kotak_list.append(rect)
-                        y += size_y
-                    x += size_x
+
+                for i, (lon, lat, name) in enumerate(points, 1):
+                    # Snap ke grid
+                    gx = round(lon / size_x) * size_x
+                    gy = round(lat / size_y) * size_y
+
+                    while (gx, gy) in used:
+                        gx += size_x  # geser biar tidak tabrakan
+                    used.add((gx, gy))
+
+                    # Buat kotak path
+                    rect = [
+                        (gx - size_x/2, gy - size_y/2),
+                        (gx + size_x/2, gy - size_y/2),
+                        (gx + size_x/2, gy + size_y/2),
+                        (gx - size_x/2, gy + size_y/2),
+                        (gx - size_x/2, gy - size_y/2),
+                    ]
+                    kotak_list.append((rect, f"{name}-{i:02d}"))
 
                 # Susun ke KML
                 document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
                 doc_el = ET.SubElement(document, "Document")
 
-                for i, rect in enumerate(kotak_list, 1):
+                for rect, name in kotak_list:
                     pm = ET.SubElement(doc_el, "Placemark")
-                    ET.SubElement(pm, "name").text = f"Kotak {i}"
+                    ET.SubElement(pm, "name").text = name
                     line = ET.SubElement(pm, "LineString")
                     ET.SubElement(line, "tessellate").text = "1"
-                    ET.SubElement(line, "coordinates").text = " ".join([f"{x},{y},0" for x,y in rect.exterior.coords])
+                    ET.SubElement(line, "coordinates").text = " ".join([f"{x},{y},0" for x,y in rect])
 
                 extract_dir = tempfile.mkdtemp()
                 new_kml = os.path.join(extract_dir, "kapling.kml")
