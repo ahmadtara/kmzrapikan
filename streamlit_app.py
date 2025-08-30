@@ -12,7 +12,6 @@ st.title("📌 KMZ Tools")
 
 menu = st.sidebar.radio("Pilih Menu", [
     "Rapikan HP ke Boundary",
-    "Generate Kotak Kapling",
     "Rename NN di HP",
     "Urutkan POLE ke Line"
 ])
@@ -119,110 +118,6 @@ if menu == "Rapikan HP ke Boundary":
                 st.download_button("📥 Download KMZ Hasil", f, "output.kmz",
                                    mime="application/vnd.google-earth.kmz")
 
-
-
-
-# MENU 2: Generate Kotak Kapling dari Titik HP
-# ============================================
-elif menu == "Generate Kotak Kapling":
-    st.subheader("📐 Buat Kotak Kapling dari Titik HP")
-
-    uploaded_file = st.file_uploader("Upload file KML/KMZ (titik HP)", type=["kml", "kmz"])
-
-    size_x = st.number_input("Ukuran X (derajat)", value=0.00005, format="%.6f")
-    size_y = st.number_input("Ukuran Y (derajat)", value=0.00005, format="%.6f")
-
-    if uploaded_file is not None:
-        # Simpan sementara
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[-1]) as tmp:
-            tmp.write(uploaded_file.read())
-            file_path = tmp.name
-
-        # Kalau KMZ → ekstrak ke KML
-        if file_path.endswith(".kmz"):
-            extract_dir = tempfile.mkdtemp()
-            with zipfile.ZipFile(file_path, 'r') as z:
-                z.extractall(extract_dir)
-                files = z.namelist()
-                kml_name = next((f for f in files if f.lower().endswith(".kml")), None)
-            kml_file = os.path.join(extract_dir, kml_name)
-        else:
-            kml_file = file_path
-
-        # Parse KML
-        parser = ET.XMLParser(recover=True, encoding="utf-8")
-        tree = ET.parse(kml_file, parser=parser)
-        root = tree.getroot()
-        ns = {"kml": "http://www.opengis.net/kml/2.2"}
-
-        # Cari folder HP saja
-        hp_folder = None
-        for folder in root.findall(".//kml:Folder", ns):
-            fname = folder.find("kml:name", ns)
-            if fname is not None and fname.text.strip().upper() == "HP":
-                hp_folder = folder
-                break
-
-        points = []
-        if hp_folder is not None:
-            placemarks = hp_folder.findall(".//kml:Placemark", ns)
-            for pm in placemarks:
-                name_el = pm.find("kml:name", ns)
-                coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
-                if coords_el is not None:
-                    lon, lat, *_ = map(float, coords_el.text.strip().split(","))
-                    name = name_el.text if name_el is not None else "NN"
-                    points.append((lon, lat, name))
-
-        if len(points) == 0:
-            st.error("❌ Tidak ada titik di folder HP.")
-        else:
-            if st.button("Generate Kotak dari Titik"):
-                used = set()
-                kotak_list = []
-
-                for i, (lon, lat, name) in enumerate(points, 1):
-                    # Snap ke grid
-                    gx = round(lon / size_x) * size_x
-                    gy = round(lat / size_y) * size_y
-
-                    while (gx, gy) in used:
-                        gx += size_x  # geser biar tidak tabrakan
-                    used.add((gx, gy))
-
-                    # Buat kotak path
-                    rect = [
-                        (gx - size_x/2, gy - size_y/2),
-                        (gx + size_x/2, gy - size_y/2),
-                        (gx + size_x/2, gy + size_y/2),
-                        (gx - size_x/2, gy + size_y/2),
-                        (gx - size_x/2, gy - size_y/2),
-                    ]
-                    kotak_list.append((rect, f"{name}-{i:02d}"))
-
-                # Susun ke KML
-                document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
-                doc_el = ET.SubElement(document, "Document")
-
-                for rect, name in kotak_list:
-                    pm = ET.SubElement(doc_el, "Placemark")
-                    ET.SubElement(pm, "name").text = name
-                    line = ET.SubElement(pm, "LineString")
-                    ET.SubElement(line, "tessellate").text = "1"
-                    ET.SubElement(line, "coordinates").text = " ".join([f"{x},{y},0" for x,y in rect])
-
-                extract_dir = tempfile.mkdtemp()
-                new_kml = os.path.join(extract_dir, "kapling.kml")
-                ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
-
-                output_kmz = os.path.join(extract_dir, "kapling.kmz")
-                with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
-                    z.write(new_kml, "doc.kml")
-
-                with open(output_kmz, "rb") as f:
-                    st.download_button("📥 Download KMZ Kotak", f, "kapling.kmz",
-                                       mime="application/vnd.google-earth.kmz")
-
 # ====== MENU 3: Rename NN di folder HP ======
 elif menu == "Rename NN di HP":
     st.subheader("🔤 Ubah nama NN → NN-01, NN-02, ... di folder HP")
@@ -316,14 +211,6 @@ elif menu == "Rename NN di HP":
 
 # ====== MENU 4: Urutkan POLE ke Line ======
 elif menu == "Urutkan POLE ke Line":
-    import zipfile
-import os
-import tempfile
-import simplekml
-from lxml import etree as ET
-from shapely.geometry import Point, LineString, Polygon
-import streamlit as st
-
 # Ambang batas jarak pole ke kabel (meter)
 DIST_THRESHOLD = 30  
 
