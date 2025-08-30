@@ -118,44 +118,89 @@ if menu == "Rapikan HP ke Boundary":
 # MENU 2: Generate Kotak Kapling
 # =========================
 elif menu == "Generate Kotak Kapling":
-    st.subheader("📐 Buat Kotak Rumah/Kapling")
+    st.subheader("📐 Buat Kotak Rumah/Kapling dari Boundary")
 
-    # Input koordinat tengah (misalnya ambil dari HP atau manual)
-    lon = st.number_input("Longitude", value=106.827153, format="%.6f")
-    lat = st.number_input("Latitude", value=-6.175392, format="%.6f")
+    uploaded_file = st.file_uploader("Upload file KML/KMZ", type=["kml", "kmz"])
+
     size_x = st.number_input("Ukuran X (derajat)", value=0.00005, format="%.6f")
     size_y = st.number_input("Ukuran Y (derajat)", value=0.00005, format="%.6f")
 
-    if st.button("Generate Kotak"):
-        # Fungsi bikin path kotak
-        def create_house_path(lon, lat, size_x=0.00005, size_y=0.00005):
-            coords = [
-                (lon - size_x, lat - size_y),
-                (lon - size_x, lat + size_y),
-                (lon + size_x, lat + size_y),
-                (lon + size_x, lat - size_y),
-                (lon - size_x, lat - size_y)
-            ]
-            return coords
+    if uploaded_file is not None:
+        # Simpan sementara
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[-1]) as tmp:
+            tmp.write(uploaded_file.read())
+            file_path = tmp.name
 
-        coords = create_house_path(lon, lat, size_x, size_y)
+        # Kalau KMZ → ekstrak ke KML
+        if file_path.endswith(".kmz"):
+            extract_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(file_path, 'r') as z:
+                z.extractall(extract_dir)
+                files = z.namelist()
+                kml_name = next((f for f in files if f.lower().endswith(".kml")), None)
+            kml_file = os.path.join(extract_dir, kml_name)
+        else:
+            kml_file = file_path
 
-        document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
-        doc_el = ET.SubElement(document, "Document")
-        pm = ET.SubElement(doc_el, "Placemark")
-        ET.SubElement(pm, "name").text = "Kotak Kapling"
-        line = ET.SubElement(pm, "LineString")
-        ET.SubElement(line, "tessellate").text = "1"
-        ET.SubElement(line, "coordinates").text = " ".join([f"{x},{y},0" for x,y in coords])
+        # Parse KML
+        parser = ET.XMLParser(recover=True, encoding="utf-8")
+        tree = ET.parse(kml_file, parser=parser)
+        root = tree.getroot()
+        ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-        extract_dir = tempfile.mkdtemp()
-        new_kml = os.path.join(extract_dir, "kapling.kml")
-        ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
+        # Cari polygon boundary pertama
+        polygon_el = root.find(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing/kml:coordinates", ns)
+        if polygon_el is None:
+            st.error("❌ Tidak ada Polygon di file KML.")
+        else:
+            coords_text = polygon_el.text.strip()
+            coords = []
+            for c in coords_text.split():
+                lon, lat, *_ = map(float, c.split(","))
+                coords.append((lon, lat))
+            boundary = Polygon(coords)
 
-        output_kmz = os.path.join(extract_dir, "kapling.kmz")
-        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
-            z.write(new_kml, "doc.kml")
+            if st.button("Generate Kotak dari Boundary"):
+                minx, miny, maxx, maxy = boundary.bounds
 
-        with open(output_kmz, "rb") as f:
-            st.download_button("📥 Download KMZ Kotak", f, "kapling.kmz",
-                               mime="application/vnd.google-earth.kmz")
+                # Buat grid kotak
+                kotak_list = []
+                x = minx
+                while x < maxx:
+                    y = miny
+                    while y < maxy:
+                        rect = Polygon([
+                            (x, y),
+                            (x, y + size_y),
+                            (x + size_x, y + size_y),
+                            (x + size_x, y),
+                            (x, y)
+                        ])
+                        if boundary.intersects(rect):
+                            kotak_list.append(rect)
+                        y += size_y
+                    x += size_x
+
+                # Susun ke KML
+                document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
+                doc_el = ET.SubElement(document, "Document")
+
+                for i, rect in enumerate(kotak_list, 1):
+                    pm = ET.SubElement(doc_el, "Placemark")
+                    ET.SubElement(pm, "name").text = f"Kotak {i}"
+                    line = ET.SubElement(pm, "LineString")
+                    ET.SubElement(line, "tessellate").text = "1"
+                    ET.SubElement(line, "coordinates").text = " ".join([f"{x},{y},0" for x,y in rect.exterior.coords])
+
+                extract_dir = tempfile.mkdtemp()
+                new_kml = os.path.join(extract_dir, "kapling.kml")
+                ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
+
+                output_kmz = os.path.join(extract_dir, "kapling.kmz")
+                with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+                    z.write(new_kml, "doc.kml")
+
+                with open(output_kmz, "rb") as f:
+                    st.download_button("📥 Download KMZ Kotak", f, "kapling.kmz",
+                                       mime="application/vnd.google-earth.kmz")
+
