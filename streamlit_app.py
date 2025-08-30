@@ -64,17 +64,19 @@ def classify_poles(tree):
     ns = {"kml": "http://www.opengis.net/kml/2.2"}
     doc = tree.getroot()
 
-    # ambil semua POLE global
+    
+
     poles = []
     for folder in doc.findall(".//kml:Folder", ns):
-    fname = folder.find("kml:name", ns)
-    if fname is not None and "POLE" in fname.text.upper():
-        for pm in folder.findall(".//kml:Placemark", ns):
-            name_el = pm.find("kml:name", ns)
-            name = name_el.text if name_el is not None else "Unnamed"
-            geom = extract_geometry(pm)
-            if isinstance(geom, Point):
-                poles.append((name, geom))
+        fname = folder.find("kml:name", ns)
+        if fname is not None and "POLE" in fname.text.upper():
+            for pm in folder.findall(".//kml:Placemark", ns):
+                name_el = pm.find("kml:name", ns)
+                name = name_el.text if name_el is not None else "Unnamed"
+                geom = extract_geometry(pm)
+                if isinstance(geom, Point):
+                    poles.append((name, geom))
+
 
 
     result = {}
