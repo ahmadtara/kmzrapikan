@@ -12,8 +12,8 @@ st.title("📌 KMZ Tools")
 
 menu = st.sidebar.radio("Pilih Menu", [
     "Rapikan HP ke Boundary",
-    "Rename NN di HP",
-    "Urutkan POLE ke Line"
+    "Rename NN di HP"
+  
 ])
 
 # =========================
@@ -208,93 +208,3 @@ elif menu == "Rename NN di HP":
                                file_name="NN_renamed.kmz",
                                mime="application/vnd.google-earth.kmz")
             
-# ====== MENU 4: Urutkan POLE ke Line ======
-elif menu == "Urutkan POLE ke Line":
-    st.subheader("🔀 Urutkan POLE ke Line")
-
-    uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
-    if uploaded_file is not None:
-        tmp_path = os.path.join(tempfile.gettempdir(), uploaded_file.name)
-        with open(tmp_path, "wb") as f:
-            f.write(uploaded_file.read())
-
-        # 👉 Input nama pole custom
-        custom_prefix = st.text_input("Prefix nama POLE baru", value="POLE")
-
-        if st.button("Proses"):
-            try:
-                tree, _ = parse_kmz(tmp_path)
-                ns = {"kml": "http://www.opengis.net/kml/2.2"}
-                doc = tree.getroot()
-                result = {}
-
-                # loop setiap LINE
-                for line_folder in doc.findall(".//kml:Folder", ns):
-                    line_name_el = line_folder.find("kml:name", ns)
-                    if line_name_el is None:
-                        continue
-                    line_name = line_name_el.text
-                    if not line_name or not line_name.upper().startswith("LINE"):
-                        continue
-
-                    # Ambil POLE di dalam LINE ini
-                    poles = []
-                    for subfolder in line_folder.findall("kml:Folder", ns):
-                        sf_name = subfolder.find("kml:name", ns)
-                        if sf_name is not None and "POLE" in sf_name.text.upper():
-                            for pm in subfolder.findall("kml:Placemark", ns):
-                                name_el = pm.find("kml:name", ns)
-                                name = name_el.text if name_el is not None else "Unnamed"
-                                geom = extract_geometry(pm)
-                                if isinstance(geom, Point):
-                                    poles.append((name, geom))
-
-                    # cari distribution cable
-                    cable = None
-                    for pm in line_folder.findall("kml:Placemark", ns):
-                        nm = (pm.find("kml:name", ns).text or "").upper()
-                        if "DISTRIBUTION CABLE" in nm:
-                            cable = extract_geometry(pm)
-
-                    # cari boundary
-                    boundaries = []
-                    for pm in line_folder.findall("kml:Placemark", ns):
-                        nm = (pm.find("kml:name", ns).text or "").upper()
-                        if "BOUNDARY" in nm:
-                            boundaries.append((nm, extract_geometry(pm)))
-
-                    # assign POLE ke kabel / boundary
-                    assigned = []
-                    for name, p in poles:
-                        ok = False
-                        if cable and isinstance(cable, LineString):
-                            d = p.distance(cable)
-                            if d <= DIST_THRESHOLD / 111320:  # derajat ~ meter
-                                assigned.append((name, p, cable.project(p)))
-                                ok = True
-                        if not ok and boundaries:
-                            for bname, boundary in boundaries:
-                                if isinstance(boundary, Polygon) and p.within(boundary):
-                                    assigned.append((name, p, p.x))
-                                    ok = True
-                                    break
-
-                    # urutkan
-                    if cable and isinstance(cable, LineString):
-                        assigned.sort(key=lambda x: x[2])
-                    else:
-                        assigned.sort(key=lambda x: x[2])
-
-                    result[line_name] = {"POLE": assigned}
-
-                # export hasil
-                output_kmz = os.path.join(tempfile.gettempdir(), "output_pole_per_line.kmz")
-                export_kmz(result, output_kmz, prefix=custom_prefix)
-
-                st.success("✅ Selesai diurutkan dan diekspor ke KMZ")
-                with open(output_kmz, "rb") as f:
-                    st.download_button("📥 Download Hasil KMZ", f, file_name="output_pole_per_line.kmz")
-
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
-
