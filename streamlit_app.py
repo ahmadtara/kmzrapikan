@@ -312,8 +312,7 @@ elif menu == "Rename NN di HP":
                                mime="application/vnd.google-earth.kmz")
             
 
-# ====== MENU 4: Urutkan Nama Pole ======
-# ====== MENU: Urutkan POLE ke Line ======
+# ====== MENU 4: Urutkan POLE ke Line ======
 elif menu == "Urutkan POLE ke Line":
     st.subheader("📍 Urutkan POLE ke Folder LINE A-D")
 
@@ -348,11 +347,11 @@ elif menu == "Urutkan POLE ke Line":
         root = tree.getroot()
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-        # Ambil folder POLE
+        # Ambil semua POLE
         pole_folder = None
         for folder in root.findall(".//kml:Folder", ns):
-            fname = folder.find("kml:name", ns)
-            if fname is not None and fname.text.strip().upper() == "POLE":
+            n = folder.find("kml:name", ns)
+            if n is not None and n.text.strip().upper() == "POLE":
                 pole_folder = folder
                 break
 
@@ -360,7 +359,6 @@ elif menu == "Urutkan POLE ke Line":
             st.error("❌ Tidak ada folder POLE ditemukan.")
             st.stop()
 
-        # Kumpulkan semua titik POLE
         poles = []
         for pm in pole_folder.findall(".//kml:Placemark", ns):
             coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
@@ -369,15 +367,19 @@ elif menu == "Urutkan POLE ke Line":
                 poles.append({"point": Point(lon, lat), "pm": pm})
 
         if not poles:
-            st.warning("❌ Tidak ada POLE ditemukan di folder POLE.")
+            st.warning("❌ Tidak ada POLE ditemukan.")
             st.stop()
 
         # Cari semua LINE A-D
         line_folders = []
         for folder in root.findall(".//kml:Folder", ns):
-            fname = folder.find("kml:name", ns)
-            if fname is not None and fname.text.strip().upper().startswith("LINE "):
+            n = folder.find("kml:name", ns)
+            if n is not None and n.text.strip().upper().startswith("LINE "):
                 line_folders.append(folder)
+
+        # Buat struktur output KML baru
+        document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
+        doc_el = ET.SubElement(document, "Document")
 
         updated_count = 0
 
@@ -385,29 +387,50 @@ elif menu == "Urutkan POLE ke Line":
             fname = line_folder.find("kml:name", ns)
             line_name = fname.text.strip() if fname is not None else "LINE"
 
-            # Ambil koordinat line (dari Distribution Cable)
+            # Ambil Distribution Cable
             coords = []
             for linestr in line_folder.findall(".//kml:LineString/kml:coordinates", ns):
                 coords.extend([
                     tuple(map(float, c.split(",")[:2]))
                     for c in linestr.text.strip().split()
                 ])
+            cable_line = LineString(coords) if coords else None
 
-            if not coords:
-                continue
+            # Ambil Boundary (jika ada)
+            boundary_polys = []
+            for poly_el in line_folder.findall(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing/kml:coordinates", ns):
+                coords_poly = [
+                    tuple(map(float, c.split(",")[:2]))
+                    for c in poly_el.text.strip().split()
+                ]
+                if coords_poly:
+                    boundary_polys.append(Polygon(coords_poly))
 
-            cable_line = LineString(coords)
-
-            # Cari pole terdekat ke line ini
+            # Tentukan pole mana yang masuk line ini
             assigned_poles = []
             for pole in poles:
-                dist = cable_line.project(pole["point"])
-                assigned_poles.append((dist, pole))
+                point = pole["point"]
 
-            # Urutkan pole sepanjang line
+                # 1) Kalau ada boundary dan point di dalam polygon
+                inside = any(poly.contains(point) for poly in boundary_polys)
+                if inside:
+                    dist = cable_line.project(point) if cable_line else 0
+                    assigned_poles.append((dist, pole))
+                    continue
+
+                # 2) Kalau tidak, pakai jarak ke kabel (fallback)
+                if cable_line:
+                    dist = cable_line.project(point)
+                    assigned_poles.append((dist, pole))
+
+            # Urutkan
             assigned_poles.sort(key=lambda x: x[0])
 
-            # Rename
+            # Buat folder untuk line ini
+            line_out = ET.SubElement(doc_el, "Folder")
+            ET.SubElement(line_out, "name").text = line_name
+
+            # Rename & masukkan ke folder line
             counter = start_num
             for _, pole in assigned_poles:
                 pm = pole["pm"]
@@ -417,24 +440,23 @@ elif menu == "Urutkan POLE ke Line":
                 nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
                 counter += 1
                 updated_count += 1
+                line_out.append(pm)
 
         if updated_count == 0:
             st.warning("Tidak ada POLE berhasil diurutkan.")
         else:
-            # Tulis ulang KML
+            # Simpan output
             out_dir = tempfile.mkdtemp()
             new_kml = os.path.join(out_dir, "poles_sorted.kml")
-            tree.write(new_kml, encoding="utf-8", xml_declaration=True)
+            ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
 
-            # Buat KMZ
             output_kmz = os.path.join(out_dir, "poles_sorted.kmz")
             with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
                 z.write(new_kml, "doc.kml")
 
             with open(output_kmz, "rb") as f:
-                st.success(f"✅ {updated_count} POLE berhasil diurutkan ke LINE A-D")
-                st.download_button("📥 Download KMZ (POLE sudah diurutkan)", f,
-                                   file_name="POLE_sorted.kmz",
+                st.success(f"✅ {updated_count} POLE berhasil diurutkan ke folder LINE A-D")
+                st.download_button("📥 Download KMZ", f, file_name="POLE_sorted.kmz",
                                    mime="application/vnd.google-earth.kmz")
 
 
