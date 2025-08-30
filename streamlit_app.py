@@ -145,34 +145,46 @@ elif menu == "Generate Kotak Kapling":
         else:
             kml_file = file_path
 
-       # Parse KML
-parser = ET.XMLParser(recover=True, encoding="utf-8")
-tree = ET.parse(kml_file, parser=parser)
-root = tree.getroot()
-ns = {"kml": "http://www.opengis.net/kml/2.2"}
+        # Parse KML
+        parser = ET.XMLParser(recover=True, encoding="utf-8")
+        tree = ET.parse(kml_file, parser=parser)
+        root = tree.getroot()
+        ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-# Cari folder HP
-hp_folder = None
-for folder in root.findall(".//kml:Folder", ns):
-    fname = folder.find("kml:name", ns)
-    if fname is not None and fname.text.strip().upper() == "HP":
-        hp_folder = folder
-        break
+        # Cari folder HP saja
+        hp_folder = None
+        for folder in root.findall(".//kml:Folder", ns):
+            fname = folder.find("kml:name", ns)
+            if fname is not None and fname.text.strip().upper() == "HP":
+                hp_folder = folder
+                break
 
-points = []
-if hp_folder is not None:
-    placemarks = hp_folder.findall(".//kml:Placemark", ns)
-    for pm in placemarks:
-        name_el = pm.find("kml:name", ns)
-        coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
-        if coords_el is not None:
-            lon, lat, *_ = map(float, coords_el.text.strip().split(","))
-            name = name_el.text if name_el is not None else "NN"
-            points.append((lon, lat, name))
+        points = []
+        if hp_folder is not None:
+            placemarks = hp_folder.findall(".//kml:Placemark", ns)
+            for pm in placemarks:
+                name_el = pm.find("kml:name", ns)
+                coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
+                if coords_el is not None:
+                    lon, lat, *_ = map(float, coords_el.text.strip().split(","))
+                    name = name_el.text if name_el is not None else "NN"
+                    points.append((lon, lat, name))
 
-if len(points) == 0:
-    st.error("❌ Tidak ada titik di folder HP.")
+        if len(points) == 0:
+            st.error("❌ Tidak ada titik di folder HP.")
+        else:
+            if st.button("Generate Kotak dari Titik"):
+                used = set()
+                kotak_list = []
 
+                for i, (lon, lat, name) in enumerate(points, 1):
+                    # Snap ke grid
+                    gx = round(lon / size_x) * size_x
+                    gy = round(lat / size_y) * size_y
+
+                    while (gx, gy) in used:
+                        gx += size_x  # geser biar tidak tabrakan
+                    used.add((gx, gy))
 
                     # Buat kotak path
                     rect = [
