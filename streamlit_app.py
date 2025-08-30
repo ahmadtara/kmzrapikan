@@ -153,7 +153,56 @@ elif menu == "Rename NN di HP":
         root = tree.getroot()
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-        # Cari fol
+        # Cari folder HP
+        def find_folder_by_name(el, name):
+            for f in el.findall(".//kml:Folder", ns):
+                n = f.find("kml:name", ns)
+                if n is not None and (n.text or "").strip() == name:
+                    return f
+            return None
+
+        hp_folder = find_folder_by_name(root, "HP")
+        if hp_folder is None:
+            st.error("❌ Folder 'HP' tidak ditemukan di KML/KMZ.")
+            st.stop()
+
+        # Kumpulkan placemark NN
+        nn_placemarks = []
+        for pm in hp_folder.findall("kml:Placemark", ns):
+            nm = pm.find("kml:name", ns)
+            if nm is None:
+                continue
+            text = (nm.text or "").strip()
+            # cocokkan yang diawali prefix (NN, NN-xx, NN xx, dsb)
+            if text.upper().startswith(prefix.upper()):
+                nn_placemarks.append(nm)
+
+        if not nn_placemarks:
+            st.warning("Tidak ada Placemark berawalan 'NN' di folder HP.")
+            st.stop()
+
+        # Rename berurutan sesuai urutan di file
+        counter = int(start_num)
+        for nm in nn_placemarks:
+            nm.text = f"{prefix}-{str(counter).zfill(int(pad_width))}"
+            counter += 1
+
+        # Tulis ulang KML
+        out_dir = tempfile.mkdtemp()
+        new_kml = os.path.join(out_dir, "renamed.kml")
+        tree.write(new_kml, encoding="utf-8", xml_declaration=True)
+
+        # Jika asalnya KMZ → buat KMZ baru; kalau KML → tetap bisa kasih KMZ juga
+        output_kmz = os.path.join(out_dir, "renamed.kmz")
+        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(new_kml, "doc.kml")
+
+        # Unduhan
+        with open(output_kmz, "rb") as f:
+            st.download_button("📥 Download KMZ (NN sudah di-rename)", f,
+                               file_name="NN_renamed.kmz",
+                               mime="application/vnd.google-earth.kmz")
+
 
 
 # =========================
