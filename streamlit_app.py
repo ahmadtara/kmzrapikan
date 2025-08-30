@@ -311,9 +311,6 @@ elif menu == "Rename NN di HP":
                                file_name="NN_renamed.kmz",
                                mime="application/vnd.google-earth.kmz")
 
-# ==============================
-# MENU 4: Titik HP ke Tengah Kotak
-# ==============================
 # MENU 4: Rapikan Titik HP ke Tengah Kotak
 # ========================================
 elif menu == "Rapikan HP ke Tengah Kotak":
@@ -352,9 +349,8 @@ elif menu == "Rapikan HP ke Tengah Kotak":
 
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-        # Cari folder KOTAK
-        kotak_folder = None
-        hp_folder = None
+        # Cari folder KOTAK & HP
+        kotak_folder, hp_folder = None, None
         for folder in root.findall(".//kml:Folder", ns):
             fname = folder.find("kml:name", ns)
             if fname is not None:
@@ -371,5 +367,77 @@ elif menu == "Rapikan HP ke Tengah Kotak":
         kotak_polygons = []
         for placemark in kotak_folder.findall("kml:Placemark", ns):
             coords_el = placemark.find(".//kml:coordinates", ns)
-            if
+            if coords_el is not None and coords_el.text:
+                coords = []
+                for pair in coords_el.text.strip().split():
+                    try:
+                        lon, lat, *_ = map(float, pair.split(","))
+                        coords.append((lon, lat))
+                    except:
+                        continue
+                if len(coords) >= 4:
+                    kotak_polygons.append(coords)
+
+        # Ambil semua titik HP
+        hp_points = []
+        for placemark in hp_folder.findall("kml:Placemark", ns):
+            name_el = placemark.find("kml:name", ns)
+            coords_el = placemark.find(".//kml:coordinates", ns)
+            if name_el is not None and coords_el is not None:
+                name = name_el.text.strip()
+                try:
+                    lon, lat, *_ = map(float, coords_el.text.strip().split(","))
+                    hp_points.append((name, lon, lat))
+                except:
+                    continue
+
+        if len(hp_points) != len(kotak_polygons):
+            st.warning(f"⚠️ Jumlah titik HP ({len(hp_points)}) tidak sama dengan jumlah kotak ({len(kotak_polygons)}). Akan dipasangkan sesuai urutan.")
+
+        # Susun KML baru
+        document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
+        doc_el = ET.SubElement(document, "Document")
+
+        from shapely.geometry import Polygon
+
+        for i, (hp, coords) in enumerate(zip(hp_points, kotak_polygons), 1):
+            hp_name, _, _ = hp
+
+            # Tambahkan kotak
+            pm_poly = ET.SubElement(doc_el, "Placemark")
+            ET.SubElement(pm_poly, "name").text = f"KOTAK-{i:02d}"
+            linestring = ET.SubElement(pm_poly, "LineString")
+            ET.SubElement(linestring, "tessellate").text = "1"
+            ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x, y in coords])
+
+            # Hitung centroid kotak
+            try:
+                poly = Polygon(coords)
+                centroid = poly.centroid
+                x_center, y_center = centroid.x, centroid.y
+            except:
+                xs = [x for x, y in coords]
+                ys = [y for x, y in coords]
+                x_center = (min(xs) + max(xs)) / 2
+                y_center = (min(ys) + max(ys)) / 2
+
+            # Tambahkan titik dengan nama asli dari HP
+            pm_point = ET.SubElement(doc_el, "Placemark")
+            ET.SubElement(pm_point, "name").text = hp_name
+            point = ET.SubElement(pm_point, "Point")
+            ET.SubElement(point, "coordinates").text = f"{x_center},{y_center},0"
+
+        # Simpan hasil
+        out_dir = tempfile.mkdtemp()
+        new_kml = os.path.join(out_dir, "rapi_hp.kml")
+        ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
+
+        output_kmz = os.path.join(out_dir, "rapi_hp.kmz")
+        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(new_kml, "doc.kml")
+
+        with open(output_kmz, "rb") as f:
+            st.download_button("📥 Download KMZ Hasil (HP ke Tengah)", f,
+                               file_name="rapi_hp.kmz",
+                               mime="application/vnd.google-earth.kmz")
 
