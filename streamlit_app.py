@@ -1,11 +1,10 @@
 import os
 import zipfile
 import tempfile
-import xml.etree.ElementTree as ET
-
 import streamlit as st
 from shapely.geometry import Point, LineString, Polygon
 from shapely.ops import unary_union
+from lxml import etree as ET   # 👉 pakai lxml agar support recover=True
 
 
 
