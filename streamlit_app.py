@@ -2,8 +2,11 @@ import streamlit as st
 import zipfile
 import os
 import tempfile
+import simplekml
 from lxml import etree as ET
 from shapely.geometry import Point, Polygon
+
+
 
 st.title("📌 KMZ Tools")
 
@@ -309,38 +312,107 @@ elif menu == "Rename NN di HP":
                                file_name="NN_renamed.kmz",
                                mime="application/vnd.google-earth.kmz")
 
+# ==============================
+# MENU 4: Titik HP ke Tengah Kotak
+# ==============================
 elif menu == "Rapikan HP ke Tengah Kotak":
-    st.header("Rapikan HP ke Tengah Kotak")
-    uploaded_file = st.file_uploader("Upload file KML titik HP (Point)", type=["kml"])
+    st.header("📍 Rapikan HP ke Tengah Kotak")
 
-    if uploaded_file:
-        import zipfile, io
+    uploaded_file = st.file_uploader("Upload file KML/KMZ dengan folder 'KOTAK'", type=["kml", "kmz"])
 
-        # Kalau KMZ → extract jadi KML
-        if uploaded_file.name.endswith(".kmz"):
-            zf = zipfile.ZipFile(uploaded_file)
-            kml_filename = [f for f in zf.namelist() if f.endswith(".kml")][0]
-            data = zf.read(kml_filename)
+    if uploaded_file is not None:
+        # Simpan sementara
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[-1]) as tmp:
+            tmp.write(uploaded_file.read())
+            file_path = tmp.name
+
+        # Kalau KMZ → ekstrak ke KML
+        if file_path.endswith(".kmz"):
+            extract_dir = tempfile.mkdtemp()
+            with zipfile.ZipFile(file_path, 'r') as z:
+                z.extractall(extract_dir)
+                files = z.namelist()
+                kml_name = next((f for f in files if f.lower().endswith(".kml")), None)
+            if not kml_name:
+                st.error("❌ Tidak ada file .kml di dalam KMZ.")
+                st.stop()
+            kml_file = os.path.join(extract_dir, kml_name)
         else:
-            data = uploaded_file.read()
+            kml_file = file_path
 
-        # Parse string KML
+        # Parse KML
+        parser = ET.XMLParser(recover=True, encoding="utf-8")
         try:
-            root = ET.fromstring(data)
+            tree = ET.parse(kml_file, parser=parser)
+            root = tree.getroot()
         except Exception as e:
             st.error(f"Gagal parsing KML: {e}")
             st.stop()
 
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
-        points = []
-        for pm in root.findall(".//kml:Placemark", ns):
-            name = pm.find("kml:name", ns)
-            coord = pm.find(".//kml:coordinates", ns)
-            if coord is not None:
-                try:
-                    lon, lat, *_ = map(float, coord.text.strip().split(","))
-                    pname = name.text if name is not None else "NN"
-                    points.append((lon, lat, pname))
-                except:
-                    continue
 
+        # Cari folder KOTAK
+        kotak_folder = None
+        for folder in root.findall(".//kml:Folder", ns):
+            fname = folder.find("kml:name", ns)
+            if fname is not None and fname.text.strip().upper() == "KOTAK":
+                kotak_folder = folder
+                break
+
+        if kotak_folder is None:
+            st.error("❌ Folder 'KOTAK' tidak ditemukan.")
+            st.stop()
+
+        # Ambil semua polygon/path di folder KOTAK
+        kotak_polygons = []
+        for placemark in kotak_folder.findall("kml:Placemark", ns):
+            coords_el = placemark.find(".//kml:coordinates", ns)
+            if coords_el is not None and coords_el.text:
+                coords = []
+                for pair in coords_el.text.strip().split():
+                    try:
+                        lon, lat, *_ = map(float, pair.split(","))
+                        coords.append((lon, lat))
+                    except:
+                        continue
+                if len(coords) >= 3:
+                    kotak_polygons.append(coords)
+
+        if not kotak_polygons:
+            st.error("❌ Tidak ada kotak (polygon/path) di folder KOTAK.")
+            st.stop()
+
+        # Susun KML baru: kotak + titik centroid
+        document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
+        doc_el = ET.SubElement(document, "Document")
+
+        for i, coords in enumerate(kotak_polygons, 1):
+            poly = Polygon(coords)
+            centroid = poly.centroid
+
+            # Tambahkan polygon kotak
+            pm_poly = ET.SubElement(doc_el, "Placemark")
+            ET.SubElement(pm_poly, "name").text = f"KOTAK-{i:02d}"
+            linestring = ET.SubElement(pm_poly, "LineString")
+            ET.SubElement(linestring, "tessellate").text = "1"
+            ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x,y in coords])
+
+            # Tambahkan titik di tengah
+            pm_point = ET.SubElement(doc_el, "Placemark")
+            ET.SubElement(pm_point, "name").text = f"NN-{i:02d}"
+            point = ET.SubElement(pm_point, "Point")
+            ET.SubElement(point, "coordinates").text = f"{centroid.x},{centroid.y},0"
+
+        # Simpan hasil
+        out_dir = tempfile.mkdtemp()
+        new_kml = os.path.join(out_dir, "tengah.kml")
+        ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
+
+        output_kmz = os.path.join(out_dir, "tengah.kmz")
+        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+            z.write(new_kml, "doc.kml")
+
+        with open(output_kmz, "rb") as f:
+            st.download_button("📥 Download KMZ Hasil (Titik Tengah)", f,
+                               file_name="tengah.kmz",
+                               mime="application/vnd.google-earth.kmz")
