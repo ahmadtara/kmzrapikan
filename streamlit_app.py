@@ -369,14 +369,14 @@ elif menu == "Urutkan Nama Pole":
                     continue
 
                 # Kumpulkan titik
-                placemarks = []
-                for pm in np_folder.findall(".//kml:Placemark", ns):
-                    coords_el = pm.find(".//kml:coordinates", ns)  # lebih umum
-                    if coords_el is not None:
-                        coords_text = coords_el.text.strip().split()
-                        if coords_text:
-                            lon, lat, *_ = map(float, coords_text[0].split(","))
-                            placemarks.append((lon, lat, pm))
+placemarks = []
+for pm in np_folder.findall(".//kml:Placemark", ns):   # pakai .// supaya rekursif
+    coords_el = pm.find(".//kml:coordinates", ns)
+    if coords_el is not None:
+        coords_text = coords_el.text.strip().split()
+        if coords_text:
+            lon, lat, *_ = map(float, coords_text[0].split(","))
+            placemarks.append((lon, lat, pm))
 
                 if not placemarks:
                     continue
