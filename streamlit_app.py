@@ -370,7 +370,7 @@ elif menu == "Urutkan Nama Pole":
 
                 # Kumpulkan titik
                 placemarks = []
-                for pm in np_folder.findall("kml:Placemark", ns):
+                for pm in np_folder.findall(".//kml:Placemark", ns):
                     coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
                     if coords_el is not None:
                         lon, lat, *_ = map(float, coords_el.text.strip().split(","))
