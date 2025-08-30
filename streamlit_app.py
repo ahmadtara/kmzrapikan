@@ -12,7 +12,7 @@ menu = st.sidebar.radio("Pilih Menu", [
     "Rapikan HP ke Boundary",
     "Generate Kotak Kapling",
     "Rename NN di HP",
-    "Urutkan Nama Pole"
+    "Urutkan POLE ke Line"
 ])
 
 # =========================
