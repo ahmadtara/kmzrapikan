@@ -309,7 +309,7 @@ elif menu == "Rename NN di HP":
                                file_name="NN_renamed.kmz",
                                mime="application/vnd.google-earth.kmz")
 
-elif menu == "4. Rapikan HP ke Tengah Kotak":
+elif menu == "Rapikan HP ke Tengah Kotak":
     st.header("Rapikan HP ke Tengah Kotak")
     uploaded_file = st.file_uploader("Upload file KML titik HP (Point)", type=["kml"])
 
