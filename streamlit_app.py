@@ -393,5 +393,31 @@ elif menu == "Urutkan Nama Pole":
                 for lon, lat, pm in placemarks:
                     nm_el = pm.find("kml:name", ns)
                     if nm_el is None:
+                        nm_el = ET.SubElement(pm, "name")
+                    nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
+                    counter += 1
+                    updated_count += 1
+
+        if updated_count == 0:
+            st.warning("❌ Tidak ada POLE ditemukan di dalam LINE A-D.")
+        else:
+            # Tulis ulang KML
+            out_dir = tempfile.mkdtemp()
+            new_kml = os.path.join(out_dir, "poles_sorted.kml")
+            tree.write(new_kml, encoding="utf-8", xml_declaration=True)
+
+            # Buat KMZ
+            output_kmz = os.path.join(out_dir, "poles_sorted.kmz")
+            with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(new_kml, "doc.kml")
+
+            with open(output_kmz, "rb") as f:
+                st.success(f"✅ {updated_count} POLE berhasil diurutkan dan di-rename")
+                st.download_button("📥 Download KMZ (Pole sudah diurutkan)", f,
+                                   file_name="POLE_sorted.kmz",
+                                   mime="application/vnd.google-earth.kmz")
+    else:
+        # biar tidak error indentation
+        pass
 
 
