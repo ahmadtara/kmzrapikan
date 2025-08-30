@@ -314,15 +314,15 @@ elif menu == "Rename NN di HP":
             
 
 # ====== MENU 4: Urutkan Nama Pole ======
-# ====== MENU 4: Urutkan Nama Pole ======
-elif menu == "Urutkan Nama Pole":
-    st.subheader("📍 Urutkan Nama Pole di Folder NEW POLE")
+# ====== MENU 4: Rapikan POLE per Boundary ======
+elif menu == "Rapikan POLE per Boundary":
+    st.subheader("📍 Rapikan POLE sesuai Boundary")
 
     uploaded_file = st.file_uploader("Upload file KML/KMZ", type=["kml", "kmz"])
     prefix = st.text_input("Prefix Nama Pole", value="MR.OATKRP.P")
     start_num = st.number_input("Nomor awal", min_value=1, value=1, step=1)
     pad_width = st.number_input("Jumlah digit (padding)", min_value=3, value=3, step=1)
-    sort_axis = st.selectbox("Urutkan berdasarkan", ["Longitude (X)", "Latitude (Y)"])
+    sort_mode = st.selectbox("Urutkan berdasarkan", ["Longitude (X)", "Latitude (Y)", "Mengikuti Alur"])
 
     if uploaded_file is not None:
         # Simpan sementara
@@ -350,74 +350,79 @@ elif menu == "Urutkan Nama Pole":
         root = tree.getroot()
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-        # Cari LINE A/B/C/D
-        line_folders = []
-        for folder in root.findall(".//kml:Folder", ns):
-            fname = folder.find("kml:name", ns)
-            if fname is not None and fname.text and fname.text.startswith("LINE "):
-                line_folders.append(folder)
+        # Cari BOUNDARY (Polygon)
+        boundaries = []
+        for pm in root.findall(".//kml:Placemark", ns):
+            poly = pm.find(".//kml:Polygon/kml:outerBoundaryIs/kml:LinearRing/kml:coordinates", ns)
+            if poly is not None:
+                coords = [tuple(map(float, c.split(",")[:2])) for c in poly.text.strip().split()]
+                boundaries.append((pm.find("kml:name", ns).text if pm.find("kml:name", ns) is not None else "Boundary", Polygon(coords)))
 
-        updated_count = 0
+        # Cari POLE (Point)
+        poles = []
+        for pm in root.findall(".//kml:Placemark", ns):
+            coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
+            if coords_el is not None:
+                lon, lat, *_ = map(float, coords_el.text.strip().split(","))
+                poles.append((Point(lon, lat), pm))
 
-        for line_folder in line_folders:
-            # Cari subfolder NEW POLE ...
-            for np_folder in line_folder.findall(".//kml:Folder", ns):
-                np_name = np_folder.find("kml:name", ns)
-                if np_name is None:
-                    continue
-                if not np_name.text.startswith("NEW POLE"):
-                    continue
+        if not boundaries or not poles:
+            st.error("❌ Tidak ada Boundary atau POLE ditemukan.")
+            st.stop()
 
-                # Kumpulkan semua placemark di bawah folder NEW POLE (rekursif)
-                placemarks = []
-                for pm in np_folder.findall(".//kml:Placemark", ns):
-                    coords_el = pm.find(".//kml:coordinates", ns)
-                    if coords_el is not None:
-                        coords_text = coords_el.text.strip().split()
-                        if coords_text:
-                            lon, lat, *_ = map(float, coords_text[0].split(","))
-                            placemarks.append((lon, lat, pm))
+        # Buat struktur KML baru
+        from simplekml import Kml
+        kml_out = Kml()
 
-                if not placemarks:
-                    st.info(f"ℹ️ Tidak ada POLE ditemukan di {np_name.text}")
-                    continue
+        total_updated = 0
 
-                # Urutkan
-                if sort_axis.startswith("Longitude"):
-                    placemarks.sort(key=lambda x: x[0])  # sort by X
-                else:
-                    placemarks.sort(key=lambda x: x[1])  # sort by Y
+        for b_idx, (bname, bpoly) in enumerate(boundaries, 1):
+            folder_b = kml_out.newfolder(name=f"{bname}")
 
-                # Rename
-                counter = start_num
-                for lon, lat, pm in placemarks:
-                    nm_el = pm.find("kml:name", ns)
-                    if nm_el is None:
-                        nm_el = ET.SubElement(pm, "name")
-                    nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
-                    counter += 1
-                    updated_count += 1
+            # Pilih POLE yang jatuh di dalam boundary ini
+            poles_in = [(pt, pm) for pt, pm in poles if bpoly.contains(pt)]
 
-        if updated_count == 0:
-            st.warning("❌ Tidak ada POLE ditemukan di dalam LINE A-D.")
+            if not poles_in:
+                continue
+
+            # Urutkan sesuai pilihan
+            if sort_mode == "Longitude (X)":
+                poles_in.sort(key=lambda x: x[0].x)
+            elif sort_mode == "Latitude (Y)":
+                poles_in.sort(key=lambda x: x[0].y)
+            else:  # Mengikuti alur (greedy nearest neighbor)
+                ordered = []
+                remaining = poles_in[:]
+                current = remaining.pop(0)
+                ordered.append(current)
+                while remaining:
+                    # cari titik terdekat
+                    current = min(remaining, key=lambda r: current[0].distance(r[0]))
+                    ordered.append(current)
+                    remaining.remove(current)
+                poles_in = ordered
+
+            # Rename & tambahkan ke folder
+            counter = start_num
+            for pt, pm in poles_in:
+                newname = f"{prefix}{str(counter).zfill(int(pad_width))}"
+                folder_b.newpoint(name=newname, coords=[(pt.x, pt.y)])
+                counter += 1
+                total_updated += 1
+
+        if total_updated == 0:
+            st.warning("❌ Tidak ada POLE yang masuk boundary.")
         else:
-            # Tulis ulang KML
+            # Simpan hasil
             out_dir = tempfile.mkdtemp()
-            new_kml = os.path.join(out_dir, "poles_sorted.kml")
-            tree.write(new_kml, encoding="utf-8", xml_declaration=True)
+            kmz_out = os.path.join(out_dir, "POLE_rapi.kmz")
+            kml_out.savekmz(kmz_out)
 
-            # Buat KMZ
-            output_kmz = os.path.join(out_dir, "poles_sorted.kmz")
-            with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
-                z.write(new_kml, "doc.kml")
-
-            with open(output_kmz, "rb") as f:
-                st.success(f"✅ {updated_count} POLE berhasil diurutkan dan di-rename")
-                st.download_button("📥 Download KMZ (Pole sudah diurutkan)", f,
-                                   file_name="POLE_sorted.kmz",
+            with open(kmz_out, "rb") as f:
+                st.success(f"✅ {total_updated} POLE berhasil dirapikan per boundary")
+                st.download_button("📥 Download KMZ (Pole sudah rapi)", f,
+                                   file_name="POLE_rapi.kmz",
                                    mime="application/vnd.google-earth.kmz")
-    else:
-        # biar tidak error indentation
-        pass
+
 
 
