@@ -314,66 +314,33 @@ elif menu == "Rapikan HP ke Tengah Kotak":
     uploaded_file = st.file_uploader("Upload file KML titik HP (Point)", type=["kml"])
 
     if uploaded_file:
-        # Parse KML
-        tree = ET.parse(uploaded_file)
-        root = tree.getroot()
-        ns = {"kml": "http://www.opengis.net/kml/2.2"}
+        import zipfile, io
 
+        # Kalau KMZ → extract jadi KML
+        if uploaded_file.name.endswith(".kmz"):
+            zf = zipfile.ZipFile(uploaded_file)
+            kml_filename = [f for f in zf.namelist() if f.endswith(".kml")][0]
+            data = zf.read(kml_filename)
+        else:
+            data = uploaded_file.read()
+
+        # Parse string KML
+        try:
+            root = ET.fromstring(data)
+        except Exception as e:
+            st.error(f"Gagal parsing KML: {e}")
+            st.stop()
+
+        ns = {"kml": "http://www.opengis.net/kml/2.2"}
         points = []
         for pm in root.findall(".//kml:Placemark", ns):
             name = pm.find("kml:name", ns)
             coord = pm.find(".//kml:coordinates", ns)
             if coord is not None:
-                lon, lat, *_ = map(float, coord.text.strip().split(","))
-                pname = name.text if name is not None else "NN"
-                points.append((lon, lat, pname))
-
-        # Buat kotak + titik di tengah
-        kotak_list = []
-        size_x = 0.0001  # ~10m
-        size_y = 0.0001
-
-        used = set()
-        for i, (lon, lat, name) in enumerate(points, 1):
-            gx = round(lon / size_x) * size_x
-            gy = round(lat / size_y) * size_y
-
-            while (gx, gy) in used:
-                gx += size_x
-            used.add((gx, gy))
-
-            rect = [
-                (gx - size_x/2, gy - size_y/2),
-                (gx + size_x/2, gy - size_y/2),
-                (gx + size_x/2, gy + size_y/2),
-                (gx - size_x/2, gy + size_y/2),
-                (gx - size_x/2, gy - size_y/2),
-            ]
-            kotak_list.append((rect, f"{name}-{i:02d}", (gx, gy)))
-
-        # Buat KML baru
-        kml = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
-        doc_el = ET.SubElement(kml, "Document")
-
-        for rect, name, center in kotak_list:
-            # Kotak
-            pm = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm, "name").text = name
-            poly = ET.SubElement(pm, "Polygon")
-            outer = ET.SubElement(poly, "outerBoundaryIs")
-            linear = ET.SubElement(outer, "LinearRing")
-            ET.SubElement(linear, "coordinates").text = " ".join([f"{x},{y},0" for x, y in rect])
-
-            # Titik tengah HP
-            pm_point = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm_point, "name").text = f"{name}-HP"
-            point = ET.SubElement(pm_point, "Point")
-            ET.SubElement(point, "coordinates").text = f"{center[0]},{center[1]},0"
-
-        # Simpan
-        out_path = "rapikan_hp.kml"
-        ET.ElementTree(kml).write(out_path, encoding="utf-8", xml_declaration=True)
-
-        with open(out_path, "rb") as f:
-            st.download_button("Download Hasil KML", f, file_name="rapikan_hp.kml")
+                try:
+                    lon, lat, *_ = map(float, coord.text.strip().split(","))
+                    pname = name.text if name is not None else "NN"
+                    points.append((lon, lat, pname))
+                except:
+                    continue
 
