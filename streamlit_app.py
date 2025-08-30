@@ -313,6 +313,7 @@ elif menu == "Rename NN di HP":
             
 
 # ====== MENU 4: Urutkan Nama Pole ======
+# ====== MENU 4: Urutkan Nama Pole ======
 elif menu == "Urutkan Nama Pole":
     st.subheader("📍 Urutkan Nama Pole per LINE (mix Cable + Boundary)")
 
@@ -417,6 +418,55 @@ elif menu == "Urutkan Nama Pole":
                         dist = pt.distance(cable_line)
                         if dist <= max_dist / 111320:  # konversi meter → derajat (kasar)
                             close_poles.append((cable_line.project(pt), pt, pm))
+                        else:
+                            far_poles.append((pt, pm))
 
+                    # urut dekat kabel
+                    close_poles.sort(key=lambda x: x[0])
+                    sorted_poles.extend([(p, pm) for _, p, pm in close_poles])
+
+                    # urut jauh kabel pakai boundary kalau ada
+                    if boundary_poly:
+                        far_poles = sorted(
+                            far_poles,
+                            key=lambda x: boundary_poly.exterior.project(x[0])
+                        )
+                    sorted_poles.extend(far_poles)
+
+                elif boundary_poly:
+                    sorted_poles = sorted(
+                        poles, key=lambda x: boundary_poly.exterior.project(x[0])
+                    )
+                else:
+                    sorted_poles = poles  # fallback tidak urut
+
+                # Rename poles
+                counter = start_num
+                for pt, pm in sorted_poles:
+                    nm_el = pm.find("kml:name", ns)
+                    if nm_el is None:
+                        nm_el = ET.SubElement(pm, "name")
+                    nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
+                    counter += 1
+                    updated_count += 1
+
+        # Output
+        if updated_count == 0:
+            st.warning("Tidak ada POLE ditemukan di dalam LINE A-D.")
+        else:
+            out_dir = tempfile.mkdtemp()
+            new_kml = os.path.join(out_dir, "poles_sorted.kml")
+            tree.write(new_kml, encoding="utf-8", xml_declaration=True)
+
+            # Buat KMZ
+            output_kmz = os.path.join(out_dir, "poles_sorted.kmz")
+            with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(new_kml, "doc.kml")
+
+            with open(output_kmz, "rb") as f:
+                st.success(f"✅ {updated_count} POLE berhasil diurutkan (Cable+Boundary)")
+                st.download_button("📥 Download KMZ (POLE sudah rapi)", f,
+                                   file_name="POLE_sorted.kmz",
+                                   mime="application/vnd.google-earth.kmz")
 
 
