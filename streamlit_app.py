@@ -257,6 +257,7 @@ elif menu == "Rename NN di HP":
 
         # Parse KML dengan lxml (lebih toleran)
         parser = ET.XMLParser(recover=True, encoding="utf-8")
+        
         tree = ET.parse(kml_file, parser=parser)
         root = tree.getroot()
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
@@ -313,6 +314,7 @@ elif menu == "Rename NN di HP":
             
 
 # ====== MENU 4: Urutkan Nama Pole ======
+# ====== MENU 4: Urutkan Nama Pole ======
 elif menu == "Urutkan Nama Pole":
     st.subheader("📍 Urutkan Nama Pole di Folder NEW POLE")
 
@@ -343,6 +345,73 @@ elif menu == "Urutkan Nama Pole":
             kml_file = file_path
 
         # Parse KML
-        parser = ET.XMLParser(recover=True, encod
+        parser = ET.XMLParser(recover=True, encoding="utf-8")
+        tree = ET.parse(kml_file, parser=parser)
+        root = tree.getroot()
+        ns = {"kml": "http://www.opengis.net/kml/2.2"}
+
+        # Cari LINE A/B/C/D
+        line_folders = []
+        for folder in root.findall(".//kml:Folder", ns):
+            fname = folder.find("kml:name", ns)
+            if fname is not None and fname.text.startswith("LINE "):
+                line_folders.append(folder)
+
+        updated_count = 0
+
+        for line_folder in line_folders:
+            # Cari subfolder NEW POLE ...
+            for np_folder in line_folder.findall(".//kml:Folder", ns):
+                np_name = np_folder.find("kml:name", ns)
+                if np_name is None:
+                    continue
+                if not np_name.text.startswith("NEW POLE"):
+                    continue
+
+                # Kumpulkan titik
+                placemarks = []
+                for pm in np_folder.findall("kml:Placemark", ns):
+                    coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
+                    if coords_el is not None:
+                        lon, lat, *_ = map(float, coords_el.text.strip().split(","))
+                        placemarks.append((lon, lat, pm))
+
+                if not placemarks:
+                    continue
+
+                # Urutkan
+                if sort_axis.startswith("Longitude"):
+                    placemarks.sort(key=lambda x: x[0])  # sort by X
+                else:
+                    placemarks.sort(key=lambda x: x[1])  # sort by Y
+
+                # Rename
+                counter = start_num
+                for lon, lat, pm in placemarks:
+                    nm_el = pm.find("kml:name", ns)
+                    if nm_el is None:
+                        nm_el = ET.SubElement(pm, "name")
+                    nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
+                    counter += 1
+                    updated_count += 1
+
+        if updated_count == 0:
+            st.warning("Tidak ada POLE ditemukan di dalam LINE A-D.")
+        else:
+            # Tulis ulang KML
+            out_dir = tempfile.mkdtemp()
+            new_kml = os.path.join(out_dir, "poles_sorted.kml")
+            tree.write(new_kml, encoding="utf-8", xml_declaration=True)
+
+            # Buat KMZ
+            output_kmz = os.path.join(out_dir, "poles_sorted.kmz")
+            with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
+                z.write(new_kml, "doc.kml")
+
+            with open(output_kmz, "rb") as f:
+                st.success(f"✅ {updated_count} POLE berhasil diurutkan dan di-rename")
+                st.download_button("📥 Download KMZ (Pole sudah diurutkan)", f,
+                                   file_name="POLE_sorted.kmz",
+                                   mime="application/vnd.google-earth.kmz")
 
 
