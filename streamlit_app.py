@@ -313,15 +313,14 @@ elif menu == "Rename NN di HP":
             
 
 # ====== MENU 4: Urutkan Nama Pole ======
-# ====== MENU 4: Urutkan Nama Pole ======
-elif menu == "Urutkan Nama Pole":
-    st.subheader("📍 Urutkan Nama Pole per LINE (mix Cable + Boundary)")
+# ====== MENU: Urutkan POLE ke Line ======
+elif menu == "Urutkan POLE ke Line":
+    st.subheader("📍 Urutkan POLE ke Folder LINE A-D")
 
     uploaded_file = st.file_uploader("Upload file KML/KMZ", type=["kml", "kmz"])
     prefix = st.text_input("Prefix Nama Pole", value="MR.OATKRP.P")
     start_num = st.number_input("Nomor awal", min_value=1, value=1, step=1)
     pad_width = st.number_input("Jumlah digit (padding)", min_value=3, value=3, step=1)
-    max_dist = st.number_input("Batas jarak ke kabel (meter)", min_value=5, value=20, step=5)
 
     if uploaded_file is not None:
         # Simpan sementara
@@ -349,111 +348,80 @@ elif menu == "Urutkan Nama Pole":
         root = tree.getroot()
         ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
+        # Ambil folder POLE
+        pole_folder = None
+        for folder in root.findall(".//kml:Folder", ns):
+            fname = folder.find("kml:name", ns)
+            if fname is not None and fname.text.strip().upper() == "POLE":
+                pole_folder = folder
+                break
+
+        if pole_folder is None:
+            st.error("❌ Tidak ada folder POLE ditemukan.")
+            st.stop()
+
+        # Kumpulkan semua titik POLE
+        poles = []
+        for pm in pole_folder.findall(".//kml:Placemark", ns):
+            coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
+            if coords_el is not None:
+                lon, lat, *_ = map(float, coords_el.text.strip().split(","))
+                poles.append({"point": Point(lon, lat), "pm": pm})
+
+        if not poles:
+            st.warning("❌ Tidak ada POLE ditemukan di folder POLE.")
+            st.stop()
+
+        # Cari semua LINE A-D
+        line_folders = []
+        for folder in root.findall(".//kml:Folder", ns):
+            fname = folder.find("kml:name", ns)
+            if fname is not None and fname.text.strip().upper().startswith("LINE "):
+                line_folders.append(folder)
+
         updated_count = 0
 
-        # Cari semua LINE A/B/C/D
-        for line_folder in root.findall(".//kml:Folder", ns):
+        for line_folder in line_folders:
             fname = line_folder.find("kml:name", ns)
-            if fname is None or not fname.text.startswith("LINE "):
+            line_name = fname.text.strip() if fname is not None else "LINE"
+
+            # Ambil koordinat line (dari Distribution Cable)
+            coords = []
+            for linestr in line_folder.findall(".//kml:LineString/kml:coordinates", ns):
+                coords.extend([
+                    tuple(map(float, c.split(",")[:2]))
+                    for c in linestr.text.strip().split()
+                ])
+
+            if not coords:
                 continue
-            line_name = fname.text
 
-            # Cari Distribution Cable (LineString)
-            cable_line = None
-            for dc_folder in line_folder.findall(".//kml:Folder", ns):
-                dc_name = dc_folder.find("kml:name", ns)
-                if dc_name is not None and dc_name.text.startswith("DISTRIBUTION CABLE"):
-                    for pm in dc_folder.findall(".//kml:Placemark", ns):
-                        coords_el = pm.find(".//kml:LineString/kml:coordinates", ns)
-                        if coords_el is not None:
-                            coords = [
-                                tuple(map(float, c.split(",")[:2]))
-                                for c in coords_el.text.strip().split()
-                            ]
-                            cable_line = LineString(coords)
-                            break
-                if cable_line:
-                    break
+            cable_line = LineString(coords)
 
-            # Cari Boundary (Polygon)
-            boundary_poly = None
-            for bd_folder in line_folder.findall(".//kml:Folder", ns):
-                bd_name = bd_folder.find("kml:name", ns)
-                if bd_name is not None and bd_name.text.startswith("BOUNDARY"):
-                    for pm in bd_folder.findall(".//kml:Placemark", ns):
-                        coords_el = pm.find(".//kml:Polygon//kml:coordinates", ns)
-                        if coords_el is not None:
-                            coords = [
-                                tuple(map(float, c.split(",")[:2]))
-                                for c in coords_el.text.strip().split()
-                            ]
-                            boundary_poly = Polygon(coords)
-                            break
-                if boundary_poly:
-                    break
+            # Cari pole terdekat ke line ini
+            assigned_poles = []
+            for pole in poles:
+                dist = cable_line.project(pole["point"])
+                assigned_poles.append((dist, pole))
 
-            # Cari folder POLE
-            for pole_folder in line_folder.findall(".//kml:Folder", ns):
-                pname = pole_folder.find("kml:name", ns)
-                if pname is None or not pname.text.startswith("POLE"):
-                    continue
+            # Urutkan pole sepanjang line
+            assigned_poles.sort(key=lambda x: x[0])
 
-                # Ambil semua pole
-                poles = []
-                for pm in pole_folder.findall(".//kml:Placemark", ns):
-                    coords_el = pm.find(".//kml:Point/kml:coordinates", ns)
-                    if coords_el is not None:
-                        lon, lat, *_ = map(float, coords_el.text.strip().split(","))
-                        poles.append((Point(lon, lat), pm))
+            # Rename
+            counter = start_num
+            for _, pole in assigned_poles:
+                pm = pole["pm"]
+                nm_el = pm.find("kml:name", ns)
+                if nm_el is None:
+                    nm_el = ET.SubElement(pm, "name")
+                nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
+                counter += 1
+                updated_count += 1
 
-                if not poles:
-                    continue
-
-                # Urutkan poles
-                sorted_poles = []
-                if cable_line:
-                    close_poles = []
-                    far_poles = []
-                    for pt, pm in poles:
-                        dist = pt.distance(cable_line)
-                        if dist <= max_dist / 111320:  # konversi meter → derajat (kasar)
-                            close_poles.append((cable_line.project(pt), pt, pm))
-                        else:
-                            far_poles.append((pt, pm))
-
-                    # urut dekat kabel
-                    close_poles.sort(key=lambda x: x[0])
-                    sorted_poles.extend([(p, pm) for _, p, pm in close_poles])
-
-                    # urut jauh kabel pakai boundary kalau ada
-                    if boundary_poly:
-                        far_poles = sorted(
-                            far_poles,
-                            key=lambda x: boundary_poly.exterior.project(x[0])
-                        )
-                    sorted_poles.extend(far_poles)
-
-                elif boundary_poly:
-                    sorted_poles = sorted(
-                        poles, key=lambda x: boundary_poly.exterior.project(x[0])
-                    )
-                else:
-                    sorted_poles = poles  # fallback tidak urut
-
-                # Rename poles
-                counter = start_num
-                for pt, pm in sorted_poles:
-                    nm_el = pm.find("kml:name", ns)
-                    if nm_el is None:
-                        nm_el = ET.SubElement(pm, "name")
-                    nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
-                    counter += 1
-                    updated_count += 1
-
-        # Output
         if updated_count == 0:
-            st.warning("Tidak ada POLE ditemukan di dalam LINE A-D.")
+            st.warning("Tidak ada POLE berhasil diurutkan.")
         else:
+            # Tulis ulang KML
             out_dir = tempfile.mkdtemp()
             new_kml = os.path.join(out_dir, "poles_sorted.kml")
             tree.write(new_kml, encoding="utf-8", xml_declaration=True)
@@ -464,8 +432,8 @@ elif menu == "Urutkan Nama Pole":
                 z.write(new_kml, "doc.kml")
 
             with open(output_kmz, "rb") as f:
-                st.success(f"✅ {updated_count} POLE berhasil diurutkan (Cable+Boundary)")
-                st.download_button("📥 Download KMZ (POLE sudah rapi)", f,
+                st.success(f"✅ {updated_count} POLE berhasil diurutkan ke LINE A-D")
+                st.download_button("📥 Download KMZ (POLE sudah diurutkan)", f,
                                    file_name="POLE_sorted.kmz",
                                    mime="application/vnd.google-earth.kmz")
 
