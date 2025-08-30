@@ -1,9 +1,12 @@
-import streamlit as st
-import zipfile
 import os
+import zipfile
 import tempfile
-from lxml import etree as ET
+import xml.etree.ElementTree as ET
+
+import streamlit as st
 from shapely.geometry import Point, LineString, Polygon
+from shapely.ops import unary_union
+
 
 
 st.title("📌 KMZ Tools")
