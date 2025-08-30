@@ -5,8 +5,6 @@ import tempfile
 from lxml import etree as ET
 from shapely.geometry import Point, Polygon
 
-
-
 st.title("📌 KMZ Tools")
 
 menu = st.sidebar.radio("Pilih Menu", [
@@ -313,7 +311,6 @@ elif menu == "Rename NN di HP":
                                mime="application/vnd.google-earth.kmz")
             
 
-# ====== MENU 4: Urutkan Nama Pole ======
 # ====== MENU 4: Rapikan POLE per Boundary ======
 elif menu == "Rapikan POLE per Boundary":
     st.subheader("📍 Rapikan POLE sesuai Boundary")
@@ -423,6 +420,5 @@ elif menu == "Rapikan POLE per Boundary":
                 st.download_button("📥 Download KMZ (Pole sudah rapi)", f,
                                    file_name="POLE_rapi.kmz",
                                    mime="application/vnd.google-earth.kmz")
-
 
 
