@@ -314,12 +314,12 @@ elif menu == "Rename NN di HP":
 # ==============================
 # MENU 4: Titik HP ke Tengah Kotak
 # ==============================
-# MENU 4: Titik HP ke Tengah Kotak
-# ==============================
+# MENU 4: Rapikan Titik HP ke Tengah Kotak
+# ========================================
 elif menu == "Rapikan HP ke Tengah Kotak":
     st.header("📍 Rapikan HP ke Tengah Kotak")
 
-    uploaded_file = st.file_uploader("Upload file KML/KMZ dengan folder 'KOTAK'", type=["kml", "kmz"])
+    uploaded_file = st.file_uploader("Upload file KML/KMZ dengan folder 'KOTAK' & 'HP'", type=["kml", "kmz"])
 
     if uploaded_file is not None:
         # Simpan sementara
@@ -354,63 +354,22 @@ elif menu == "Rapikan HP ke Tengah Kotak":
 
         # Cari folder KOTAK
         kotak_folder = None
+        hp_folder = None
         for folder in root.findall(".//kml:Folder", ns):
             fname = folder.find("kml:name", ns)
-            if fname is not None and fname.text.strip().upper() == "KOTAK":
-                kotak_folder = folder
-                break
+            if fname is not None:
+                if fname.text.strip().upper() == "KOTAK":
+                    kotak_folder = folder
+                elif fname.text.strip().upper() == "HP":
+                    hp_folder = folder
 
-        if kotak_folder is None:
-            st.error("❌ Folder 'KOTAK' tidak ditemukan.")
+        if kotak_folder is None or hp_folder is None:
+            st.error("❌ Folder 'KOTAK' atau 'HP' tidak ditemukan.")
             st.stop()
 
-        # Ambil semua polygon/path di folder KOTAK
+        # Ambil semua kotak
         kotak_polygons = []
         for placemark in kotak_folder.findall("kml:Placemark", ns):
             coords_el = placemark.find(".//kml:coordinates", ns)
-            if coords_el is not None and coords_el.text:
-                coords = []
-                for pair in coords_el.text.strip().split():
-                    try:
-                        lon, lat, *_ = map(float, pair.split(","))
-                        coords.append((lon, lat))
-                    except:
-                        continue
-                if len(coords) >= 4:
-                    kotak_polygons.append(coords)
-
-        if not kotak_polygons:
-            st.error("❌ Tidak ada kotak (polygon/path) di folder KOTAK.")
-            st.stop()
-
-        # Susun KML baru: kotak + titik tengah
-        document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
-        doc_el = ET.SubElement(document, "Document")
-
-        from shapely.geometry import Polygon  # ⬅️ tambahan import
-
-        for i, coords in enumerate(kotak_polygons, 1):
-            # Tambahkan polygon kotak
-            pm_poly = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm_poly, "name").text = f"KOTAK-{i:02d}"
-            linestring = ET.SubElement(pm_poly, "LineString")
-            ET.SubElement(linestring, "tessellate").text = "1"
-            ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x, y in coords])
-
-            # Hitung titik tengah akurat (centroid polygon)
-            try:
-                poly = Polygon(coords)
-                centroid = poly.centroid
-                x_center, y_center = centroid.x, centroid.y
-            except:
-                # fallback: bounding box
-                xs = [x for x, y in coords]
-                ys = [y for x, y in coords]
-                x_center = (min(xs) + max(xs)) / 2
-                y_center = (min(ys) + max(ys)) / 2
-
-            # Tambahkan titik tengah
-            pm_point = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm_point, "na_
-
+            if
 
