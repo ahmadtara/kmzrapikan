@@ -314,6 +314,9 @@ elif menu == "Rename NN di HP":
 # ==============================
 # MENU 4: Titik HP ke Tengah Kotak
 # ==============================
+# ==============================
+# MENU 4: Titik HP ke Tengah Kotak
+# ==============================
 elif menu == "Rapikan HP ke Tengah Kotak":
     st.header("📍 Rapikan HP ke Tengah Kotak")
 
@@ -374,21 +377,18 @@ elif menu == "Rapikan HP ke Tengah Kotak":
                         coords.append((lon, lat))
                     except:
                         continue
-                if len(coords) >= 3:
+                if len(coords) >= 4:
                     kotak_polygons.append(coords)
 
         if not kotak_polygons:
             st.error("❌ Tidak ada kotak (polygon/path) di folder KOTAK.")
             st.stop()
 
-        # Susun KML baru: kotak + titik centroid
+        # Susun KML baru: kotak + titik tengah bounding box
         document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
         doc_el = ET.SubElement(document, "Document")
 
         for i, coords in enumerate(kotak_polygons, 1):
-            poly = Polygon(coords)
-            centroid = poly.centroid
-
             # Tambahkan polygon kotak
             pm_poly = ET.SubElement(doc_el, "Placemark")
             ET.SubElement(pm_poly, "name").text = f"KOTAK-{i:02d}"
@@ -396,11 +396,17 @@ elif menu == "Rapikan HP ke Tengah Kotak":
             ET.SubElement(linestring, "tessellate").text = "1"
             ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x,y in coords])
 
-            # Tambahkan titik di tengah
+            # Hitung titik tengah bounding box
+            xs = [x for x, y in coords]
+            ys = [y for x, y in coords]
+            x_center = (min(xs) + max(xs)) / 2
+            y_center = (min(ys) + max(ys)) / 2
+
+            # Tambahkan titik tengah
             pm_point = ET.SubElement(doc_el, "Placemark")
             ET.SubElement(pm_point, "name").text = f"NN-{i:02d}"
             point = ET.SubElement(pm_point, "Point")
-            ET.SubElement(point, "coordinates").text = f"{centroid.x},{centroid.y},0"
+            ET.SubElement(point, "coordinates").text = f"{x_center},{y_center},0"
 
         # Simpan hasil
         out_dir = tempfile.mkdtemp()
@@ -415,3 +421,4 @@ elif menu == "Rapikan HP ke Tengah Kotak":
             st.download_button("📥 Download KMZ Hasil (Titik Tengah)", f,
                                file_name="tengah.kmz",
                                mime="application/vnd.google-earth.kmz")
+
