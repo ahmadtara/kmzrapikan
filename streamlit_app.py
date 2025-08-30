@@ -3,7 +3,8 @@ import zipfile
 import os
 import tempfile
 from lxml import etree as ET
-from shapely.geometry import Point, Polygon
+from shapely.geometry import Point, LineString, Polygon
+
 
 st.title("📌 KMZ Tools")
 
