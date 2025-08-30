@@ -398,34 +398,37 @@ elif menu == "Rapikan HP ke Tengah Kotak":
         document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
         doc_el = ET.SubElement(document, "Document")
 
-        from shapely.geometry import Polygon
+        from shapely.geometry import Point
 
-        for i, (hp, coords) in enumerate(zip(hp_points, kotak_polygons), 1):
-            hp_name, _, _ = hp
+used_idx = set()
+for hp_name, hp_lon, hp_lat in hp_points:
+    hp_pt = Point(hp_lon, hp_lat)
 
-            # Tambahkan kotak
-            pm_poly = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm_poly, "name").text = f"KOTAK-{i:02d}"
-            linestring = ET.SubElement(pm_poly, "LineString")
-            ET.SubElement(linestring, "tessellate").text = "1"
-            ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x, y in coords])
+    # cari kotak terdekat
+    best_idx, best_dist = None, float("inf")
+    for j, coords in enumerate(kotak_polygons):
+        if j in used_idx: 
+            continue
+        poly = Polygon(coords)
+        d = hp_pt.distance(poly.centroid)
+        if d < best_dist:
+            best_dist = d
+            best_idx = j
 
-            # Hitung centroid kotak
-            try:
-                poly = Polygon(coords)
-                centroid = poly.centroid
-                x_center, y_center = centroid.x, centroid.y
-            except:
-                xs = [x for x, y in coords]
-                ys = [y for x, y in coords]
-                x_center = (min(xs) + max(xs)) / 2
-                y_center = (min(ys) + max(ys)) / 2
+    if best_idx is None:
+        continue
+    used_idx.add(best_idx)
 
-            # Tambahkan titik dengan nama asli dari HP
-            pm_point = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm_point, "name").text = hp_name
-            point = ET.SubElement(pm_point, "Point")
-            ET.SubElement(point, "coordinates").text = f"{x_center},{y_center},0"
+    coords = kotak_polygons[best_idx]
+    centroid = Polygon(coords).centroid
+    x_center, y_center = centroid.x, centroid.y
+
+    # buat titik dengan nama asli HP
+    pm_point = ET.SubElement(doc_el, "Placemark")
+    ET.SubElement(pm_point, "name").text = hp_name
+    point = ET.SubElement(pm_point, "Point")
+    ET.SubElement(point, "coordinates").text = f"{x_center},{y_center},0"
+
 
         # Simpan hasil
         out_dir = tempfile.mkdtemp()
