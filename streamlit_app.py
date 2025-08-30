@@ -114,6 +114,48 @@ if menu == "Rapikan HP ke Boundary":
                 st.download_button("📥 Download KMZ Hasil", f, "output.kmz",
                                    mime="application/vnd.google-earth.kmz")
 
+# ====== MENU 3: Rename NN di folder HP ======
+elif menu == "Rename NN di HP":
+    st.subheader("🔤 Ubah nama NN → NN-01, NN-02, ... di folder HP")
+
+    uploaded_file = st.file_uploader("Upload file KML/KMZ", type=["kml", "kmz"])
+    start_num = st.number_input("Nomor awal", min_value=1, value=1, step=1)
+    pad_width = st.number_input("Jumlah digit (padding)", min_value=1, value=2, step=1)
+    prefix = st.text_input("Prefix yang dicari", value="NN")
+
+    if uploaded_file is not None:
+        # Simpan sementara
+        import tempfile, os, zipfile
+        from lxml import etree as ET
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[-1]) as tmp:
+            tmp.write(uploaded_file.read())
+            file_path = tmp.name
+
+        # Jika KMZ → ekstrak KML
+        extract_dir = tempfile.mkdtemp()
+        if file_path.lower().endswith(".kmz"):
+            with zipfile.ZipFile(file_path, 'r') as z:
+                z.extractall(extract_dir)
+                files = z.namelist()
+                kml_name = next((f for f in files if f.lower().endswith(".kml")), None)
+                if not kml_name:
+                    st.error("❌ Tidak ada file .kml di dalam KMZ.")
+                    st.stop()
+                kml_file = os.path.join(extract_dir, kml_name)
+        else:
+            # KML langsung
+            kml_file = file_path
+
+        # Parse KML dengan lxml (lebih toleran)
+        parser = ET.XMLParser(recover=True, encoding="utf-8")
+        tree = ET.parse(kml_file, parser=parser)
+        root = tree.getroot()
+        ns = {"kml": "http://www.opengis.net/kml/2.2"}
+
+        # Cari fol
+
+
 # =========================
 # MENU 2: Generate Kotak Kapling
 # =========================
