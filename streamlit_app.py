@@ -314,7 +314,6 @@ elif menu == "Rename NN di HP":
 # ==============================
 # MENU 4: Titik HP ke Tengah Kotak
 # ==============================
-# ==============================
 # MENU 4: Titik HP ke Tengah Kotak
 # ==============================
 elif menu == "Rapikan HP ke Tengah Kotak":
@@ -384,9 +383,11 @@ elif menu == "Rapikan HP ke Tengah Kotak":
             st.error("❌ Tidak ada kotak (polygon/path) di folder KOTAK.")
             st.stop()
 
-        # Susun KML baru: kotak + titik tengah bounding box
+        # Susun KML baru: kotak + titik tengah
         document = ET.Element("kml", xmlns="http://www.opengis.net/kml/2.2")
         doc_el = ET.SubElement(document, "Document")
+
+        from shapely.geometry import Polygon  # ⬅️ tambahan import
 
         for i, coords in enumerate(kotak_polygons, 1):
             # Tambahkan polygon kotak
@@ -394,31 +395,22 @@ elif menu == "Rapikan HP ke Tengah Kotak":
             ET.SubElement(pm_poly, "name").text = f"KOTAK-{i:02d}"
             linestring = ET.SubElement(pm_poly, "LineString")
             ET.SubElement(linestring, "tessellate").text = "1"
-            ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x,y in coords])
+            ET.SubElement(linestring, "coordinates").text = " ".join([f"{x},{y},0" for x, y in coords])
 
-            # Hitung titik tengah bounding box
-            xs = [x for x, y in coords]
-            ys = [y for x, y in coords]
-            x_center = (min(xs) + max(xs)) / 2
-            y_center = (min(ys) + max(ys)) / 2
+            # Hitung titik tengah akurat (centroid polygon)
+            try:
+                poly = Polygon(coords)
+                centroid = poly.centroid
+                x_center, y_center = centroid.x, centroid.y
+            except:
+                # fallback: bounding box
+                xs = [x for x, y in coords]
+                ys = [y for x, y in coords]
+                x_center = (min(xs) + max(xs)) / 2
+                y_center = (min(ys) + max(ys)) / 2
 
             # Tambahkan titik tengah
             pm_point = ET.SubElement(doc_el, "Placemark")
-            ET.SubElement(pm_point, "name").text = f"NN-{i:02d}"
-            point = ET.SubElement(pm_point, "Point")
-            ET.SubElement(point, "coordinates").text = f"{x_center},{y_center},0"
+            ET.SubElement(pm_point, "na_
 
-        # Simpan hasil
-        out_dir = tempfile.mkdtemp()
-        new_kml = os.path.join(out_dir, "tengah.kml")
-        ET.ElementTree(document).write(new_kml, encoding="utf-8", xml_declaration=True)
-
-        output_kmz = os.path.join(out_dir, "tengah.kmz")
-        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
-            z.write(new_kml, "doc.kml")
-
-        with open(output_kmz, "rb") as f:
-            st.download_button("📥 Download KMZ Hasil (Titik Tengah)", f,
-                               file_name="tengah.kmz",
-                               mime="application/vnd.google-earth.kmz")
 
