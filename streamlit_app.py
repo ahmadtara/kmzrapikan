@@ -13,7 +13,7 @@ menu = st.sidebar.radio("Pilih Menu", [
     "Rapikan HP ke Boundary",
     "Generate Kotak Kapling",
     "Rename NN di HP",
-    "Rapikan HP ke Tengah Kotak"
+    "Urutkan Nama Pole"
 ])
 
 # =========================
@@ -310,8 +310,39 @@ elif menu == "Rename NN di HP":
             st.download_button("📥 Download KMZ (NN sudah di-rename)", f,
                                file_name="NN_renamed.kmz",
                                mime="application/vnd.google-earth.kmz")
+            
 
-# MENU 4: Rapikan Titik HP ke Tengah Kotak
-# ========================================
+# ====== MENU 4: Urutkan Nama Pole ======
+elif menu == "Urutkan Nama Pole":
+    st.subheader("📍 Urutkan Nama Pole di Folder NEW POLE")
+
+    uploaded_file = st.file_uploader("Upload file KML/KMZ", type=["kml", "kmz"])
+    prefix = st.text_input("Prefix Nama Pole", value="MR.OATKRP.P")
+    start_num = st.number_input("Nomor awal", min_value=1, value=1, step=1)
+    pad_width = st.number_input("Jumlah digit (padding)", min_value=3, value=3, step=1)
+    sort_axis = st.selectbox("Urutkan berdasarkan", ["Longitude (X)", "Latitude (Y)"])
+
+    if uploaded_file is not None:
+        # Simpan sementara
+        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[-1]) as tmp:
+            tmp.write(uploaded_file.read())
+            file_path = tmp.name
+
+        # Jika KMZ → ekstrak KML
+        extract_dir = tempfile.mkdtemp()
+        if file_path.lower().endswith(".kmz"):
+            with zipfile.ZipFile(file_path, 'r') as z:
+                z.extractall(extract_dir)
+                files = z.namelist()
+                kml_name = next((f for f in files if f.lower().endswith(".kml")), None)
+                if not kml_name:
+                    st.error("❌ Tidak ada file .kml di dalam KMZ.")
+                    st.stop()
+                kml_file = os.path.join(extract_dir, kml_name)
+        else:
+            kml_file = file_path
+
+        # Parse KML
+        parser = ET.XMLParser(recover=True, encod
 
 
