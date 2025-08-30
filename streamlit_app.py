@@ -322,9 +322,7 @@ elif menu == "Urutkan Nama Pole":
     prefix = st.text_input("Prefix Nama Pole", value="MR.OATKRP.P")
     start_num = st.number_input("Nomor awal", min_value=1, value=1, step=1)
     pad_width = st.number_input("Jumlah digit (padding)", min_value=3, value=3, step=1)
-    sort_mode = st.selectbox("Urutkan berdasarkan", [
-        "Longitude (X)", "Latitude (Y)", "Mengikuti Jalur (jarak dari titik pertama)"
-    ])
+    sort_axis = st.selectbox("Urutkan berdasarkan", ["Longitude (X)", "Latitude (Y)"])
 
     if uploaded_file is not None:
         # Simpan sementara
@@ -356,7 +354,7 @@ elif menu == "Urutkan Nama Pole":
         line_folders = []
         for folder in root.findall(".//kml:Folder", ns):
             fname = folder.find("kml:name", ns)
-            if fname is not None and fname.text.startswith("LINE "):
+            if fname is not None and fname.text and fname.text.startswith("LINE "):
                 line_folders.append(folder)
 
         updated_count = 0
@@ -365,60 +363,35 @@ elif menu == "Urutkan Nama Pole":
             # Cari subfolder NEW POLE ...
             for np_folder in line_folder.findall(".//kml:Folder", ns):
                 np_name = np_folder.find("kml:name", ns)
-                if np_name is None or not np_name.text.startswith("NEW POLE"):
+                if np_name is None:
+                    continue
+                if not np_name.text.startswith("NEW POLE"):
                     continue
 
-                # Kumpulkan titik
-placemarks = []
-for pm in np_folder.findall(".//kml:Placemark", ns):   # pakai .// supaya rekursif
-    coords_el = pm.find(".//kml:coordinates", ns)
-    if coords_el is not None:
-        coords_text = coords_el.text.strip().split()
-        if coords_text:
-            lon, lat, *_ = map(float, coords_text[0].split(","))
-            placemarks.append((lon, lat, pm))
+                # Kumpulkan semua placemark di bawah folder NEW POLE (rekursif)
+                placemarks = []
+                for pm in np_folder.findall(".//kml:Placemark", ns):
+                    coords_el = pm.find(".//kml:coordinates", ns)
+                    if coords_el is not None:
+                        coords_text = coords_el.text.strip().split()
+                        if coords_text:
+                            lon, lat, *_ = map(float, coords_text[0].split(","))
+                            placemarks.append((lon, lat, pm))
 
                 if not placemarks:
+                    st.info(f"ℹ️ Tidak ada POLE ditemukan di {np_name.text}")
                     continue
 
-                st.write(f"📂 {np_name.text} → {len(placemarks)} pole ditemukan")
-
-                # Urutkan sesuai pilihan
-                if sort_mode == "Longitude (X)":
-                    placemarks.sort(key=lambda x: x[0])
-                elif sort_mode == "Latitude (Y)":
-                    placemarks.sort(key=lambda x: x[1])
-                else:  # Mengikuti Jalur
-                    from math import hypot
-                    base_x, base_y, _ = placemarks[0]
-                    placemarks.sort(key=lambda p: hypot(p[0]-base_x, p[1]-base_y))
+                # Urutkan
+                if sort_axis.startswith("Longitude"):
+                    placemarks.sort(key=lambda x: x[0])  # sort by X
+                else:
+                    placemarks.sort(key=lambda x: x[1])  # sort by Y
 
                 # Rename
                 counter = start_num
                 for lon, lat, pm in placemarks:
                     nm_el = pm.find("kml:name", ns)
                     if nm_el is None:
-                        nm_el = ET.SubElement(pm, "name")
-                    nm_el.text = f"{prefix}{str(counter).zfill(int(pad_width))}"
-                    counter += 1
-                    updated_count += 1
 
-        if updated_count == 0:
-            st.warning("Tidak ada POLE ditemukan di dalam LINE A-D.")
-        else:
-            # Tulis ulang KML
-            out_dir = tempfile.mkdtemp()
-            new_kml = os.path.join(out_dir, "poles_sorted.kml")
-            tree.write(new_kml, encoding="utf-8", xml_declaration=True)
-
-            # Buat KMZ
-            output_kmz = os.path.join(out_dir, "poles_sorted.kmz")
-            with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as z:
-                z.write(new_kml, "doc.kml")
-
-            with open(output_kmz, "rb") as f:
-                st.success(f"✅ {updated_count} POLE berhasil diurutkan dan di-rename")
-                st.download_button("📥 Download KMZ (Pole sudah diurutkan)", f,
-                                   file_name="POLE_sorted.kmz",
-                                   mime="application/vnd.google-earth.kmz")
 
