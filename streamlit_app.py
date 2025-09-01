@@ -1,80 +1,102 @@
 import streamlit as st
 import ezdxf
-import tempfile
-from shapely.geometry import Polygon, Point
 import math
+import os
+from shapely.geometry import Polygon, Point
 
-st.set_page_config(page_title="📐 Rapikan Label DXF", layout="wide")
-st.title("📐 Rapikan Label DXF ke Tengah Kotak")
+st.set_page_config(page_title="Rapikan Teks DXF", layout="wide")
 
-uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
+def get_polygons(doc):
+    polygons = []
+    for entity in doc.modelspace().query("LWPOLYLINE POLYLINE"):
+        try:
+            if entity.dxftype() == "LWPOLYLINE" and entity.closed:
+                points = [(p[0], p[1]) for p in entity.get_points()]
+                polygons.append(Polygon(points))
+            elif entity.dxftype() == "POLYLINE" and entity.is_closed:
+                points = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
+                polygons.append(Polygon(points))
+        except Exception:
+            continue
+    return polygons
 
-if uploaded_file:
-    # Simpan file sementara
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
-        tmp.write(uploaded_file.read())
-        tmp_path = tmp.name
+def get_best_fit_text_height(text, box_w, box_h):
+    """Hitung tinggi teks agar muat dalam kotak"""
+    if not text:
+        return 1.0
+    # estimasi lebar teks per karakter ~0.6 * tinggi
+    est_height_x = (box_w / (len(text) * 0.6))
+    est_height_y = box_h
+    return min(est_height_x, est_height_y) * 0.8  # sedikit margin
 
-    # Baca DXF
-    doc = ezdxf.readfile(tmp_path)
+def get_longest_side_angle(polygon):
+    """Ambil sudut sisi terpanjang polygon"""
+    coords = list(polygon.exterior.coords)
+    max_len = 0
+    best_angle = 0
+    for i in range(len(coords) - 1):
+        x1, y1 = coords[i]
+        x2, y2 = coords[i + 1]
+        length = math.hypot(x2 - x1, y2 - y1)
+        if length > max_len:
+            max_len = length
+            best_angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
+    return best_angle
+
+def process_dxf(input_path, output_path):
+    doc = ezdxf.readfile(input_path)
     msp = doc.modelspace()
+    polygons = get_polygons(doc)
 
-    kotak_list = []
+    text_entities = [e for e in msp.query("TEXT") if e.dxf.color == 6 or e.dxf.layer.upper() == "FEATURE_LABEL"]
 
-    # Ambil kotak dari LWPOLYLINE
-    for e in msp.query("LWPOLYLINE"):
-        points = [(p[0], p[1]) for p in e]
-        if e.closed and len(points) >= 4:
-            poly = Polygon(points)
-            if poly.is_valid and poly.area > 0:
-                kotak_list.append(poly)
-
-    # Ambil kotak dari POLYLINE
-    for e in msp.query("POLYLINE"):
-        points = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
-        if len(points) >= 4:
-            if points[0] != points[-1]:  # tutup loop
-                points.append(points[0])
-            poly = Polygon(points)
-            if poly.is_valid and poly.area > 0:
-                kotak_list.append(poly)
-
-    # Ambil semua teks (TEXT & MTEXT) di layer FEATURE_LABEL
-    text_entities = [t for t in msp.query("TEXT MTEXT") if t.dxf.layer == "FEATURE_LABEL"]
-
-    moved = 0
+    fixed_count = 0
     for text in text_entities:
-        if text.dxftype() == "TEXT":
-            x, y = text.dxf.insert[0], text.dxf.insert[1]
-        else:  # MTEXT
-            x, y = text.dxf.insert[0], text.dxf.insert[1]
+        pt = Point(text.dxf.insert[0], text.dxf.insert[1])
 
-        point = Point(x, y)
-
-        # Cari kotak terdekat
         nearest_poly = None
-        nearest_dist = float("inf")
-        for poly in kotak_list:
-            dist = poly.distance(point)
-            if dist < nearest_dist:
+        nearest_dist = 1e9
+        for poly in polygons:
+            if poly.contains(pt):
                 nearest_poly = poly
-                nearest_dist = dist
+                break
+            else:
+                dist = pt.distance(poly)
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_poly = poly
 
         if nearest_poly:
-            # Geser teks ke centroid kotak
-            cx, cy = nearest_poly.centroid.x, nearest_poly.centroid.y
-            text.dxf.insert = (cx, cy)
-            text.dxf.rotation = 0  # reset rotasi biar lurus
-            moved += 1
+            minx, miny, maxx, maxy = nearest_poly.bounds
+            center_x, center_y = (minx + maxx) / 2, (miny + maxy) / 2
+            width, height = (maxx - minx), (maxy - miny)
 
-    # Simpan hasil rapikan
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_out:
-        output_path = tmp_out.name
-        doc.saveas(output_path)
+            # ukur tinggi teks otomatis
+            new_height = get_best_fit_text_height(text.dxf.text, width, height)
 
-    st.info(f"📦 Jumlah kotak terdeteksi: {len(kotak_list)}")
-    st.info(f"🔤 Jumlah teks terdeteksi: {len(text_entities)}")
-    st.success(f"✅ Selesai! {moved} teks berhasil dirapikan ke tengah kotak.")
+            # rotasi sesuai sisi terpanjang
+            angle = get_longest_side_angle(nearest_poly)
+
+            text.dxf.insert = (center_x, center_y)
+            text.dxf.height = new_height
+            text.dxf.rotation = angle
+            fixed_count += 1
+
+    doc.saveas(output_path)
+    return len(polygons), len(text_entities), fixed_count
+
+st.title("📐 Rapikan Teks DXF ke Tengah Kotak")
+
+uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
+if uploaded_file:
+    input_path = uploaded_file.name
+    with open(input_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+
+    output_path = "rapi_output.dxf"
+    kotak, teks, sukses = process_dxf(input_path, output_path)
+
+    st.success(f"📦 Jumlah kotak terdeteksi: {kotak}\n\n🔤 Jumlah teks terdeteksi: {teks}\n\n✅ {sukses} teks berhasil dirapikan ke tengah kotak.")
 
     with open(output_path, "rb") as f:
-        st.download_button("⬇️ Download DXF Rapi", f, file_name="rapi.dxf", mime="application/dxf")
+        st.download_button("📥 Download Hasil DXF", f, file_name="rapi_output.dxf")
