@@ -5,37 +5,64 @@ from shapely.geometry import Point, Polygon
 import math
 
 st.set_page_config(page_title="Perapihan Label DXF", layout="wide")
-
 st.title("📐 Rapikan Label DXF ke Tengah Kotak")
 
 uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
 
 if uploaded_file:
-    # Simpan file sementara
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
-    # Baca DXF
     doc = ezdxf.readfile(tmp_path)
     msp = doc.modelspace()
 
-    # Ambil semua polyline (kotak)
+    # --- Ambil semua kotak ---
     kotak_list = []
+
+    # 1. LWPOLYLINE
     for e in msp.query("LWPOLYLINE"):
-        if e.closed:  # hanya polyline tertutup
+        if e.closed:
             points = [(p[0], p[1]) for p in e]
             kotak_list.append((Polygon(points), e))
 
-    # Ambil semua TEXT & MTEXT
-    text_entities = list(msp.query("TEXT MTEXT"))
+    # 2. POLYLINE (3D polyline lama)
+    for e in msp.query("POLYLINE"):
+        if e.is_closed:
+            points = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
+            kotak_list.append((Polygon(points), e))
+
+    # 3. Gabungan LINE → cek per layer apakah closed loop
+    # (optional, agak panjang logikanya, bisa aku buat kalau perlu)
+
+    st.write(f"📦 Jumlah kotak terdeteksi: {len(kotak_list)}")
+
+    # --- Ambil semua teks ---
+    text_entities = []
+
+    # 1. TEXT dan MTEXT
+    for e in msp.query("TEXT MTEXT"):
+        text_entities.append(e)
+
+    # 2. INSERT dengan ATTRIB
+    for insert in msp.query("INSERT"):
+        for attrib in insert.attribs:
+            text_entities.append(attrib)
+
+    st.write(f"🔤 Jumlah teks terdeteksi: {len(text_entities)}")
 
     moved = 0
     for text in text_entities:
-        x, y, *_ = text.dxf.insert
+        try:
+            if hasattr(text.dxf, "insert"):
+                x, y, *_ = text.dxf.insert
+            else:
+                x, y = text.dxf.align_point.x, text.dxf.align_point.y
+        except:
+            continue
+
         point = Point(x, y)
 
-        # Cari kotak terdekat
         nearest_poly = None
         nearest_dist = float("inf")
         for poly, entity in kotak_list:
@@ -45,13 +72,9 @@ if uploaded_file:
                 nearest_dist = dist
 
         if nearest_poly:
-            # Hitung centroid kotak
             cx, cy = nearest_poly.centroid.x, nearest_poly.centroid.y
-
-            # Geser text ke tengah kotak
             text.dxf.insert = (cx, cy)
 
-            # Rotasi teks mengikuti orientasi kotak (ambil arah sisi pertama)
             coords = list(nearest_poly.exterior.coords)
             if len(coords) >= 2:
                 dx = coords[1][0] - coords[0][0]
@@ -61,7 +84,6 @@ if uploaded_file:
 
             moved += 1
 
-    # Simpan hasil rapikan
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_out:
         output_path = tmp_out.name
         doc.saveas(output_path)
