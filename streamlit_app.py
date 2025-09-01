@@ -1,102 +1,86 @@
-import streamlit as st
 import ezdxf
 import math
-import os
 from shapely.geometry import Polygon, Point
 
-st.set_page_config(page_title="Rapikan Teks DXF", layout="wide")
+def is_rectangle(polygon, angle_tol=10, aspect_ratio_tol=0.2):
+    """Cek apakah polygon adalah persegi panjang"""
+    if len(polygon) != 5:  # 4 titik + 1 titik penutup
+        return False
 
-def get_polygons(doc):
-    polygons = []
-    for entity in doc.modelspace().query("LWPOLYLINE POLYLINE"):
-        try:
-            if entity.dxftype() == "LWPOLYLINE" and entity.closed:
-                points = [(p[0], p[1]) for p in entity.get_points()]
-                polygons.append(Polygon(points))
-            elif entity.dxftype() == "POLYLINE" and entity.is_closed:
-                points = [(v.dxf.location.x, v.dxf.location.y) for v in entity.vertices]
-                polygons.append(Polygon(points))
-        except Exception:
-            continue
-    return polygons
+    coords = polygon[:-1]
+    if len(coords) != 4:
+        return False
 
-def get_best_fit_text_height(text, box_w, box_h):
-    """Hitung tinggi teks agar muat dalam kotak"""
-    if not text:
-        return 1.0
-    # estimasi lebar teks per karakter ~0.6 * tinggi
-    est_height_x = (box_w / (len(text) * 0.6))
-    est_height_y = box_h
-    return min(est_height_x, est_height_y) * 0.8  # sedikit margin
+    # Hitung vektor sisi
+    def angle_between(v1, v2):
+        dot = v1[0]*v2[0] + v1[1]*v2[1]
+        mag1 = math.hypot(v1[0], v1[1])
+        mag2 = math.hypot(v2[0], v2[1])
+        cosang = dot / (mag1 * mag2)
+        return math.degrees(math.acos(max(-1, min(1, cosang))))
 
-def get_longest_side_angle(polygon):
-    """Ambil sudut sisi terpanjang polygon"""
-    coords = list(polygon.exterior.coords)
-    max_len = 0
-    best_angle = 0
-    for i in range(len(coords) - 1):
-        x1, y1 = coords[i]
-        x2, y2 = coords[i + 1]
-        length = math.hypot(x2 - x1, y2 - y1)
-        if length > max_len:
-            max_len = length
-            best_angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-    return best_angle
+    for i in range(4):
+        p1, p2, p3 = coords[i], coords[(i+1)%4], coords[(i+2)%4]
+        v1 = (p2[0]-p1[0], p2[1]-p1[1])
+        v2 = (p3[0]-p2[0], p3[1]-p2[1])
+        ang = angle_between(v1, v2)
+        if not (90-angle_tol <= ang <= 90+angle_tol):
+            return False
 
-def process_dxf(input_path, output_path):
-    doc = ezdxf.readfile(input_path)
+    # Cek aspek rasio
+    xs = [p[0] for p in coords]
+    ys = [p[1] for p in coords]
+    width = max(xs)-min(xs)
+    height = max(ys)-min(ys)
+    if width == 0 or height == 0:
+        return False
+    aspect = max(width/height, height/width)
+    if aspect > 10:  # terlalu panjang → abaikan
+        return False
+
+    return True
+
+def move_texts_to_rectangles(input_file, output_file, target_layer="KOTAK"):
+    doc = ezdxf.readfile(input_file)
     msp = doc.modelspace()
-    polygons = get_polygons(doc)
 
-    text_entities = [e for e in msp.query("TEXT") if e.dxf.color == 6 or e.dxf.layer.upper() == "FEATURE_LABEL"]
+    rectangles = []
+    for e in msp:
+        if e.dxftype() == "LWPOLYLINE" and e.closed:
+            points = [(p[0], p[1]) for p in e]
+            if target_layer and e.dxf.layer != target_layer:
+                continue
+            if is_rectangle(points):
+                poly = Polygon(points)
+                if 2 < poly.bounds[2]-poly.bounds[0] < 50 and 2 < poly.bounds[3]-poly.bounds[1] < 50:
+                    rectangles.append((poly, e))
 
-    fixed_count = 0
-    for text in text_entities:
+    texts = [e for e in msp if e.dxftype() in ["TEXT", "MTEXT"]]
+
+    assigned = 0
+    for text in texts:
         pt = Point(text.dxf.insert[0], text.dxf.insert[1])
-
-        nearest_poly = None
-        nearest_dist = 1e9
-        for poly in polygons:
+        for poly, entity in rectangles:
             if poly.contains(pt):
-                nearest_poly = poly
+                cx, cy = poly.centroid.x, poly.centroid.y
+                text.dxf.insert = (cx, cy)
+
+                # Sesuaikan tinggi teks agar muat
+                minx, miny, maxx, maxy = poly.bounds
+                box_w = maxx - minx
+                box_h = maxy - miny
+                max_size = min(box_w, box_h) * 0.4
+                if text.dxf.height > max_size:
+                    text.dxf.height = max_size
+
+                assigned += 1
                 break
-            else:
-                dist = pt.distance(poly)
-                if dist < nearest_dist:
-                    nearest_dist = dist
-                    nearest_poly = poly
 
-        if nearest_poly:
-            minx, miny, maxx, maxy = nearest_poly.bounds
-            center_x, center_y = (minx + maxx) / 2, (miny + maxy) / 2
-            width, height = (maxx - minx), (maxy - miny)
+    print(f"📦 Jumlah kotak terdeteksi: {len(rectangles)}")
+    print(f"🔤 Jumlah teks terdeteksi: {len(texts)}")
+    print(f"✅ {assigned} teks berhasil dirapikan ke tengah kotak.")
 
-            # ukur tinggi teks otomatis
-            new_height = get_best_fit_text_height(text.dxf.text, width, height)
+    doc.saveas(output_file)
 
-            # rotasi sesuai sisi terpanjang
-            angle = get_longest_side_angle(nearest_poly)
-
-            text.dxf.insert = (center_x, center_y)
-            text.dxf.height = new_height
-            text.dxf.rotation = angle
-            fixed_count += 1
-
-    doc.saveas(output_path)
-    return len(polygons), len(text_entities), fixed_count
-
-st.title("📐 Rapikan Teks DXF ke Tengah Kotak")
-
-uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
-if uploaded_file:
-    input_path = uploaded_file.name
-    with open(input_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
-    output_path = "rapi_output.dxf"
-    kotak, teks, sukses = process_dxf(input_path, output_path)
-
-    st.success(f"📦 Jumlah kotak terdeteksi: {kotak}\n\n🔤 Jumlah teks terdeteksi: {teks}\n\n✅ {sukses} teks berhasil dirapikan ke tengah kotak.")
-
-    with open(output_path, "rb") as f:
-        st.download_button("📥 Download Hasil DXF", f, file_name="rapi_output.dxf")
+# === Jalankan ===
+move_texts_to_rectangles("PKB001962.dxf", "output_rapi.dxf", target_layer="KOTAK")
