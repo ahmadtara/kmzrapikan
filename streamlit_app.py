@@ -1,10 +1,11 @@
 import streamlit as st
 import ezdxf
 import tempfile
-from collections import Counter
+from shapely.geometry import Polygon, Point
+import math
 
-st.set_page_config(page_title="DXF Entity Analyzer", layout="wide")
-st.title("🔍 Analisis Struktur DXF")
+st.set_page_config(page_title="📐 Rapikan Label DXF", layout="wide")
+st.title("📐 Rapikan Label DXF ke Tengah Kotak")
 
 uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
 
@@ -15,31 +16,65 @@ if uploaded_file:
         tmp_path = tmp.name
 
     # Baca DXF
-    try:
-        doc = ezdxf.readfile(tmp_path)
-    except Exception as e:
-        st.error(f"Gagal membaca DXF: {e}")
-        st.stop()
-
+    doc = ezdxf.readfile(tmp_path)
     msp = doc.modelspace()
 
-    # Ambil semua entity
-    entities = list(msp)
-    entity_types = [e.dxftype() for e in entities]
+    kotak_list = []
 
-    counter = Counter(entity_types)
+    # Ambil kotak dari LWPOLYLINE
+    for e in msp.query("LWPOLYLINE"):
+        points = [(p[0], p[1]) for p in e]
+        if e.closed and len(points) >= 4:
+            poly = Polygon(points)
+            if poly.is_valid and poly.area > 0:
+                kotak_list.append(poly)
 
-    st.subheader("📦 Jumlah Entity per Tipe")
-    for etype, count in counter.items():
-        st.write(f"- **{etype}** : {count}")
+    # Ambil kotak dari POLYLINE
+    for e in msp.query("POLYLINE"):
+        points = [(v.dxf.location.x, v.dxf.location.y) for v in e.vertices]
+        if len(points) >= 4:
+            if points[0] != points[-1]:  # tutup loop
+                points.append(points[0])
+            poly = Polygon(points)
+            if poly.is_valid and poly.area > 0:
+                kotak_list.append(poly)
 
-    st.success(f"Total entity terdeteksi: {len(entities)}")
+    # Ambil semua teks (TEXT & MTEXT) di layer FEATURE_LABEL
+    text_entities = [t for t in msp.query("TEXT MTEXT") if t.dxf.layer == "FEATURE_LABEL"]
 
-    # Contoh preview beberapa entity pertama
-    st.subheader("🔎 Contoh Entity Pertama")
-    for e in entities[:10]:
-        st.json({
-            "type": e.dxftype(),
-            "layer": e.dxf.layer if hasattr(e.dxf, "layer") else None,
-            "color": e.dxf.color if hasattr(e.dxf, "color") else None,
-        })
+    moved = 0
+    for text in text_entities:
+        if text.dxftype() == "TEXT":
+            x, y = text.dxf.insert[0], text.dxf.insert[1]
+        else:  # MTEXT
+            x, y = text.dxf.insert[0], text.dxf.insert[1]
+
+        point = Point(x, y)
+
+        # Cari kotak terdekat
+        nearest_poly = None
+        nearest_dist = float("inf")
+        for poly in kotak_list:
+            dist = poly.distance(point)
+            if dist < nearest_dist:
+                nearest_poly = poly
+                nearest_dist = dist
+
+        if nearest_poly:
+            # Geser teks ke centroid kotak
+            cx, cy = nearest_poly.centroid.x, nearest_poly.centroid.y
+            text.dxf.insert = (cx, cy)
+            text.dxf.rotation = 0  # reset rotasi biar lurus
+            moved += 1
+
+    # Simpan hasil rapikan
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_out:
+        output_path = tmp_out.name
+        doc.saveas(output_path)
+
+    st.info(f"📦 Jumlah kotak terdeteksi: {len(kotak_list)}")
+    st.info(f"🔤 Jumlah teks terdeteksi: {len(text_entities)}")
+    st.success(f"✅ Selesai! {moved} teks berhasil dirapikan ke tengah kotak.")
+
+    with open(output_path, "rb") as f:
+        st.download_button("⬇️ Download DXF Rapi", f, file_name="rapi.dxf", mime="application/dxf")
