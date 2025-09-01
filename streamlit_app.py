@@ -1,51 +1,61 @@
 import streamlit as st
 import ezdxf
 import io
-from shapely.geometry import Polygon
+from shapely.geometry import Polygon, Point
 
 st.set_page_config(page_title="DXF Rapikan Teks", layout="wide")
 
-st.title("📐 DXF Rapikan Teks di Tengah Kotak")
+st.title("📐 DXF Rapikan Teks (warna pink ke tengah kotak)")
 
 uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
 
-if uploaded_file is not None:
-    # Baca DXF dari buffer (BytesIO)
+if uploaded_file:
+    # Baca DXF dari buffer
     data = uploaded_file.read()
     buffer = io.BytesIO(data)
     doc = ezdxf.read(buffer)
 
+    # Ambil modelspace
     msp = doc.modelspace()
 
-    st.success("✅ File DXF berhasil dibaca")
-
-    # Cari polyline yang berbentuk kotak
+    # Ambil semua polyline (kotak)
     kotak_list = []
     for e in msp.query("LWPOLYLINE"):
         if e.closed and len(e) >= 4:
             points = [(p[0], p[1]) for p in e]
-            polygon = Polygon(points)
-            if polygon.is_valid and polygon.area > 0:
-                kotak_list.append((polygon.centroid.x, polygon.centroid.y))
+            kotak_list.append(Polygon(points))
 
-    # Tambahkan teks di tengah kotak
-    counter = 1
-    for cx, cy in kotak_list:
-        label = f"NN-{counter:02d}"
-        msp.add_text(
-            label,
-            dxfattribs={"height": 1.0}
-        ).set_pos((cx, cy), align="MIDDLE_CENTER")
-        counter += 1
+    # Rapikan semua teks warna pink
+    for text in msp.query("TEXT"):
+        if text.dxf.color == 6:  # warna pink
+            pos = Point(text.dxf.insert)
 
-    # Simpan hasil ke buffer baru
-    output_buffer = io.BytesIO()
-    doc.write(output_buffer)
-    output_buffer.seek(0)
+            # Cari kotak terdekat
+            nearest_kotak = None
+            nearest_dist = float("inf")
+            for kotak in kotak_list:
+                dist = kotak.distance(pos)
+                if dist < nearest_dist:
+                    nearest_dist = dist
+                    nearest_kotak = kotak
+
+            # Kalau ada kotak, pindahkan teks ke tengah
+            if nearest_kotak:
+                cx, cy = nearest_kotak.centroid.x, nearest_kotak.centroid.y
+                text.dxf.insert = (cx, cy)
+                text.dxf.halign = 1  # Tengah
+                text.dxf.valign = 2  # Middle
+
+    # Simpan hasil
+    output = io.BytesIO()
+    doc.write(output)
+    output.seek(0)
 
     st.download_button(
-        "⬇️ Download DXF Rapih",
-        data=output_buffer,
-        file_name="DXF_RAPIH.dxf",
-        mime="application/dxf"
+        "💾 Download DXF Rapi",
+        output,
+        file_name="hasil_rapi.dxf",
+        mime="application/dxf",
     )
+
+    st.success("✅ Semua teks warna pink sudah dipindah ke tengah kotak terdekat.")
