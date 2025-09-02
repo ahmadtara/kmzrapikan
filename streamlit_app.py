@@ -4,7 +4,6 @@ import numpy as np
 import math
 import tempfile
 import os
-import io
 
 st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 
@@ -13,6 +12,10 @@ st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 # =======================
 
 def polyline_bounds_and_angle(poly):
+    """
+    Hitung bounding box dan sudut rotasi (derajat) dari POLYLINE/LWPOLYLINE.
+    Angle dihitung dari sisi bawah kotak relatif sumbu X.
+    """
     try:
         pts = [tuple(v) for v in poly.get_points("xy")]
     except Exception:
@@ -29,6 +32,10 @@ def polyline_bounds_and_angle(poly):
     return (xmin, ymin, xmax, ymax), angle
 
 def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
+    """
+    Skalakan tinggi teks agar muat dalam kotak, tanpa mengubah posisi.
+    margin: persentase ruang kosong dalam kotak
+    """
     x1, y1, x2, y2 = box_bounds
     box_w = abs(x2 - x1) * margin
     box_h = abs(y2 - y1) * margin
@@ -43,6 +50,7 @@ def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
 def process_dxf(doc):
     msp = doc.modelspace()
 
+    # Ambil semua polyline sebagai kotak sementara
     boxes = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
         try:
@@ -63,6 +71,7 @@ def process_dxf(doc):
         except Exception:
             continue
 
+        # Cari kotak terdekat
         nearest_box = None
         nearest_dist = 1e9
         for b in boxes:
@@ -75,8 +84,10 @@ def process_dxf(doc):
                 nearest_dist = dist
 
         if nearest_box:
+            # Scale tinggi teks agar muat kotak
             new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
             t.dxf.height = new_h
+            # Rotate teks sesuai kotak
             try:
                 t.dxf.rotation = nearest_box["angle"]
             except Exception:
@@ -90,30 +101,32 @@ def process_dxf(doc):
 # Streamlit UI
 # =======================
 
-st.title("📐 Rapikan Teks DXF Kapling (Tetap di Posisi Asal)")
+st.title("📐 Rapikan Teks DXF Kapling (Tetap di Template Asli)")
 
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
 if uploaded_file:
+    # Simpan sementara file asli
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
 
     try:
+        # Buka DXF asli
         doc = ezdxf.readfile(tmp_path)
         doc = process_dxf(doc)
 
-        # simpan ke BytesIO dengan saveas (paling aman)
-        out_buf = io.BytesIO()
-        doc.saveas(out_buf)
-        out_buf.seek(0)
+        # Simpan kembali ke file sementara (overwrite)
+        doc.saveas(tmp_path)
 
-        st.download_button(
-            "💾 Download DXF Hasil",
-            data=out_buf.getvalue(),
-            file_name="rapi_kapling.dxf",
-            mime="application/dxf"
-        )
+        # Download langsung file asli yang sudah di-rapikan
+        with open(tmp_path, "rb") as f:
+            st.download_button(
+                "💾 Download DXF Hasil",
+                data=f.read(),
+                file_name="rapi_kapling.dxf",
+                mime="application/dxf"
+            )
 
     except Exception as e:
         st.error(f"❌ Gagal memproses file DXF: {e}")
