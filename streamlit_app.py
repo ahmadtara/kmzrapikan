@@ -2,9 +2,10 @@ import streamlit as st
 import zipfile
 import os
 import shutil
+import re
 from lxml import etree
 
-# Fungsi pembersih namespace
+# Fungsi pembersih namespace langsung dari tree
 def clean_namespaces(elem):
     if isinstance(elem.tag, str) and (elem.tag.startswith("ns1:") or elem.tag.startswith("gx:")):
         return None
@@ -26,7 +27,6 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
         shutil.rmtree(extract_dir)
     os.makedirs(extract_dir, exist_ok=True)
 
-    # Simpan upload sebagai sementara
     tmp_kmz = "uploaded.kmz"
     with open(tmp_kmz, "wb") as f:
         f.write(kmz_bytes)
@@ -48,12 +48,20 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
     if not main_kml:
         raise FileNotFoundError("Tidak ada file .kml di dalam KMZ")
 
+    # 🔧 Bersihkan prefix namespace nyasar dari file KML mentah
+    with open(main_kml, "rb") as f:
+        raw_xml = f.read()
+    raw_xml = re.sub(rb"\s+xmlns:ns1=\"[^\"]*\"", b"", raw_xml)
+    raw_xml = re.sub(rb"\s+xmlns:gx=\"[^\"]*\"", b"", raw_xml)
+    raw_xml = re.sub(rb"\bns1:", b"", raw_xml)
+    raw_xml = re.sub(rb"\bgx:", b"", raw_xml)
+
     parser = etree.XMLParser(remove_blank_text=True, recover=True)
-    tree = etree.parse(main_kml, parser)
-    root = tree.getroot()
+    root = etree.fromstring(raw_xml, parser)
     clean_namespaces(root)
 
     # Simpan KML bersih
+    tree = etree.ElementTree(root)
     tree.write(output_kml, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
     # Bungkus ulang jadi KMZ
