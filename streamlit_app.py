@@ -114,7 +114,7 @@ mode = st.radio("Mode rotasi teks", ["shortest", "horizontal"])
 action = st.selectbox("Pilih Aksi", ["Rapikan Teks", "Debug Entities"])
 
 if uploaded_file is not None:
-    doc = ezdxf.readfile(uploaded_file)
+    doc = ezdxf.read(uploaded_file)
 
     if action == "Rapikan Teks":
         new_doc = process_dxf(doc, mode=mode)
