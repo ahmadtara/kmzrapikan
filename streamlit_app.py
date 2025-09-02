@@ -1,3 +1,5 @@
+📂 streamlit_app.py
+
 import streamlit as st
 import ezdxf
 import numpy as np
@@ -31,26 +33,22 @@ def polyline_bounds_and_angle(poly):
         angle = 0
     return (xmin, ymin, xmax, ymax), angle
 
+
 def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
     """
-    Skalakan tinggi teks agar muat dalam kotak, tanpa mengubah posisi.
-    margin: persentase ruang kosong dalam kotak
+    Skalakan tinggi teks agar muat dalam kotak.
+    Posisi teks tidak diubah.
     """
     x1, y1, x2, y2 = box_bounds
-    box_w = abs(x2 - x1) * margin
     box_h = abs(y2 - y1) * margin
-    try:
-        text_w = len(text_entity.dxf.text) * text_entity.dxf.height * 0.6
-        text_h = text_entity.dxf.height
-    except Exception:
-        return text_entity.dxf.height
-    scale = min(box_w / max(text_w, 1e-6), box_h / max(text_h, 1e-6))
-    return max(0.1, text_entity.dxf.height * scale)
+    # tinggi teks baru = minimum antara tinggi asli dan tinggi kotak
+    return min(text_entity.dxf.height, box_h)
+
 
 def process_dxf(doc):
     msp = doc.modelspace()
 
-    # Ambil semua polyline sebagai kotak sementara
+    # Ambil semua polyline sebagai kotak
     boxes = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
         try:
@@ -87,21 +85,23 @@ def process_dxf(doc):
             # Scale tinggi teks agar muat kotak
             new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
             t.dxf.height = new_h
-            # Rotate teks sesuai kotak
+
+            # Rotasi teks sesuai kotak (sejajar kapling)
             try:
                 t.dxf.rotation = nearest_box["angle"]
             except Exception:
                 pass
+
             adjusted += 1
 
-    st.success(f"✅ Selesai! {adjusted} teks berhasil disesuaikan agar muat kotak.")
+    st.success(f"✅ Selesai! {adjusted} teks berhasil disesuaikan (rapi & sejajar, posisi tetap).")
     return doc
 
 # =======================
 # Streamlit UI
 # =======================
 
-st.title("📐 Rapikan Teks DXF Kapling (Tetap di Template Asli)")
+st.title("📐 Rapikan Teks DXF Kapling (Posisi Tetap, Hanya Scale & Rotate)")
 
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
