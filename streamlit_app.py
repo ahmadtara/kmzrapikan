@@ -6,44 +6,80 @@ import re
 from lxml import etree
 import tempfile
 
-# === Pembersih raw XML dari prefix/namespace nyasar ===
-def strip_bad_prefixes(xml_bytes: bytes) -> bytes:
+# Daftar prefix resmi yang ingin dipertahankan
+VALID_PREFIXES = {"kml", "gx"}
+
+# === Pembersih raw XML dari unbound prefix ===
+def strip_only_bad_prefixes(xml_bytes: bytes) -> bytes:
     """
-    Bersihkan elemen/atribut dengan prefix tak dikenal (gx:, ns1:, dll).
+    Bersihkan elemen/atribut dengan prefix tak dikenal (bukan kml: atau gx:).
     """
-    # Hapus prefix di tag secara mentah pakai regex
-    # Contoh: <ns1:fovy> → <fovy>
-    cleaned = re.sub(rb"</?\w+:(\w+)", rb"<\1", xml_bytes)
+    # Hapus tag dengan prefix tak dikenal, tetap pertahankan yang valid
+    def repl_tag_start(match):
+        prefix, tag = match.group(1).decode(), match.group(2).decode()
+        if prefix in VALID_PREFIXES:
+            return f"<{prefix}:{tag}>".encode()
+        else:
+            return f"<{tag}>".encode()
 
-    # Hapus atribut dengan prefix ns1: atau gx:
-    cleaned = re.sub(rb"\s+\w+:\w+=\"[^\"]*\"", b"", cleaned)
+    def repl_tag_end(match):
+        prefix, tag = match.group(1).decode(), match.group(2).decode()
+        if prefix in VALID_PREFIXES:
+            return f"</{prefix}:{tag}>".encode()
+        else:
+            return f"</{tag}>".encode()
 
-    return cleaned
+    xml_bytes = re.sub(rb"<(\w+):(\w+)>", repl_tag_start, xml_bytes)
+    xml_bytes = re.sub(rb"</(\w+):(\w+)>", repl_tag_end, xml_bytes)
 
-def clean_kml_file(input_path, output_path):
-    with open(input_path, "rb") as f:
-        raw = f.read()
+    # Hapus atribut dengan prefix tak dikenal
+    def repl_attr(match):
+        prefix = match.group(1).decode()
+        if prefix in VALID_PREFIXES:
+            return match.group(0)
+        else:
+            return b""
 
-    cleaned = strip_bad_prefixes(raw)
+    xml_bytes = re.sub(rb'\s+(\w+):(\w+)="[^"]*"', repl_attr, xml_bytes)
 
-    parser = etree.XMLParser(remove_blank_text=True, recover=True)
-    tree = etree.fromstring(cleaned, parser=parser)
+    return xml_bytes
 
-    with open(output_path, "wb") as f:
-        f.write(etree.tostring(tree, pretty_print=True, xml_declaration=True, encoding="UTF-8"))
-
-# === Fungsi pembersih tree sebagai backup ===
+# === Fungsi pembersih tree backup ===
 def clean_namespaces(elem):
+    """
+    Membersihkan sisa prefix tak dikenal dari tree lxml.
+    """
     if isinstance(elem.tag, str) and ":" in elem.tag:
-        elem.tag = elem.tag.split(":")[-1]
-    bad_attrs = [a for a in elem.attrib if ":" in a]
+        prefix = elem.tag.split(":")[0]
+        if prefix not in VALID_PREFIXES:
+            elem.tag = elem.tag.split(":")[-1]  # hapus prefix tak dikenal
+
+    bad_attrs = [a for a in elem.attrib if ":" in a and a.split(":")[0] not in VALID_PREFIXES]
     for a in bad_attrs:
         new_key = a.split(":")[-1]
         elem.attrib[new_key] = elem.attrib[a]
         del elem.attrib[a]
+
     for child in elem:
         clean_namespaces(child)
+
     return elem
+
+# === Fungsi untuk membersihkan file KML ===
+def clean_kml_file(input_path, output_path):
+    with open(input_path, "rb") as f:
+        raw = f.read()
+
+    cleaned = strip_only_bad_prefixes(raw)
+
+    parser = etree.XMLParser(remove_blank_text=True, recover=True)
+    tree = etree.fromstring(cleaned, parser=parser)
+
+    # Backup pembersihan tree
+    clean_namespaces(tree)
+
+    with open(output_path, "wb") as f:
+        f.write(etree.tostring(tree, pretty_print=True, xml_declaration=True, encoding="UTF-8"))
 
 # === Fungsi utama untuk membersihkan KMZ ===
 def clean_kmz(kmz_bytes, output_kml, output_kmz):
@@ -72,15 +108,8 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
         # Bersihkan KML
         clean_kml_file(main_kml, output_kml)
 
-        # Backup cleanup tree tambahan
-        parser = etree.XMLParser(remove_blank_text=True, recover=True)
-        tree_root = etree.parse(output_kml, parser).getroot()
-        clean_namespaces(tree_root)
-        etree.ElementTree(tree_root).write(output_kml, pretty_print=True, xml_declaration=True, encoding="UTF-8")
-
-        # Bungkus ulang jadi KMZ
+        # Bungkus ulang jadi KMZ, tetap pertahankan semua file
         with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Tambahkan semua file dari extract_dir agar struktur folder KMZ tetap
             for folder, _, files in os.walk(extract_dir):
                 for file in files:
                     file_path = os.path.join(folder, file)
@@ -88,7 +117,7 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
                     zf.write(file_path, arcname)
 
 # === Streamlit App ===
-st.title("🗺️ Pembersih KMZ dari Namespace Nyasar")
+st.title("🗺️ Pembersih KMZ Aman dari Unbound Prefix")
 
 uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
 
@@ -99,7 +128,7 @@ if uploaded_file:
     if st.button("🚀 Bersihkan"):
         try:
             clean_kmz(uploaded_file.read(), output_kml, output_kmz)
-            st.success("✅ File berhasil dibersihkan!")
+            st.success("✅ File berhasil dibersihkan tanpa unbound prefix!")
 
             with open(output_kml, "rb") as f:
                 st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
