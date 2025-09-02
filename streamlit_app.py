@@ -5,22 +5,28 @@ import shutil
 import re
 from lxml import etree
 
-# Fungsi pembersih namespace langsung dari tree
+# === Pembersih raw XML dari prefix/namespace nyasar ===
+def clean_raw_xml(raw_xml: bytes) -> bytes:
+    # Hapus semua deklarasi xmlns:xxx="..."
+    raw_xml = re.sub(rb'\s+xmlns:[a-zA-Z0-9_]+="[^"]*"', b"", raw_xml)
+    # Hapus semua prefix xxx: dari tag/atribut
+    raw_xml = re.sub(rb"\b[a-zA-Z0-9_]+:", b"", raw_xml)
+    return raw_xml
+
+# === Fungsi pembersih tree (backup kalau masih ada sisa) ===
 def clean_namespaces(elem):
-    if isinstance(elem.tag, str) and (elem.tag.startswith("ns1:") or elem.tag.startswith("gx:")):
-        return None
-    bad_attrs = [a for a in elem.attrib if a.startswith("ns1:") or a.startswith("gx:")]
+    if isinstance(elem.tag, str) and ":" in elem.tag:
+        elem.tag = elem.tag.split(":")[-1]  # buang prefix
+    bad_attrs = [a for a in elem.attrib if ":" in a]
     for a in bad_attrs:
+        new_key = a.split(":")[-1]
+        elem.attrib[new_key] = elem.attrib[a]
         del elem.attrib[a]
-    to_remove = []
     for child in elem:
-        cleaned = clean_namespaces(child)
-        if cleaned is None:
-            to_remove.append(child)
-    for child in to_remove:
-        elem.remove(child)
+        clean_namespaces(child)
     return elem
 
+# === Fungsi utama ===
 def clean_kmz(kmz_bytes, output_kml, output_kmz):
     extract_dir = "temp_extract"
     if os.path.exists(extract_dir):
@@ -48,13 +54,10 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
     if not main_kml:
         raise FileNotFoundError("Tidak ada file .kml di dalam KMZ")
 
-    # 🔧 Bersihkan prefix namespace nyasar dari file KML mentah
+    # Baca dan bersihkan raw XML
     with open(main_kml, "rb") as f:
         raw_xml = f.read()
-    raw_xml = re.sub(rb"\s+xmlns:ns1=\"[^\"]*\"", b"", raw_xml)
-    raw_xml = re.sub(rb"\s+xmlns:gx=\"[^\"]*\"", b"", raw_xml)
-    raw_xml = re.sub(rb"\bns1:", b"", raw_xml)
-    raw_xml = re.sub(rb"\bgx:", b"", raw_xml)
+    raw_xml = clean_raw_xml(raw_xml)
 
     parser = etree.XMLParser(remove_blank_text=True, recover=True)
     root = etree.fromstring(raw_xml, parser)
@@ -72,7 +75,7 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
     os.remove(tmp_kmz)
 
 # === Streamlit App ===
-st.title("🗺️ Pembersih KMZ KML Namespace")
+st.title("🗺️ Pembersih KMZ dari Namespace Nyasar")
 
 uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
 
@@ -80,11 +83,17 @@ if uploaded_file:
     output_kml = "clean_output.kml"
     output_kmz = "clean_output.kmz"
 
-    if st.button("Bersihkan"):
-        clean_kmz(uploaded_file.read(), output_kml, output_kmz)
+    if st.button("🚀 Bersihkan"):
+        try:
+            clean_kmz(uploaded_file.read(), output_kml, output_kmz)
 
-        with open(output_kml, "rb") as f:
-            st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
+            st.success("✅ File berhasil dibersihkan!")
 
-        with open(output_kmz, "rb") as f:
-            st.download_button("⬇️ Download KMZ Bersih", f, file_name="clean.kmz")
+            with open(output_kml, "rb") as f:
+                st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
+
+            with open(output_kmz, "rb") as f:
+                st.download_button("⬇️ Download KMZ Bersih", f, file_name="clean.kmz")
+
+        except Exception as e:
+            st.error(f"Gagal memproses: {e}")
