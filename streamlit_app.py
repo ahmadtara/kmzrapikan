@@ -3,6 +3,8 @@ import ezdxf
 import numpy as np
 import io
 import math
+import tempfile
+import os
 
 st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 
@@ -81,7 +83,6 @@ def process_dxf(doc):
         nearest_dist = 1e9
         for b in boxes:
             xmin, ymin, xmax, ymax = b["bounds"]
-            # centroid kotak
             cx = (xmin + xmax) / 2
             cy = (ymin + ymax) / 2
             dist = np.hypot(cx - x, cy - y)
@@ -114,8 +115,13 @@ st.title("📐 Rapikan Teks DXF Kapling (Tetap di Posisi Asal)")
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
 if uploaded_file:
+    # simpan ke temporary file agar kompatibel ezdxf.readfile()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
+        tmp.write(uploaded_file.read())
+        tmp_path = tmp.name
+
     try:
-        doc = ezdxf.readfile(uploaded_file)
+        doc = ezdxf.readfile(tmp_path)
         doc = process_dxf(doc)
 
         out_buf = io.BytesIO()
@@ -128,3 +134,5 @@ if uploaded_file:
         )
     except Exception as e:
         st.error(f"❌ Gagal memproses file DXF: {e}")
+    finally:
+        os.unlink(tmp_path)  # hapus temporary file
