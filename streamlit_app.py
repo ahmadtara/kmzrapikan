@@ -116,15 +116,20 @@ if uploaded_file:
         doc = ezdxf.readfile(tmp_path)
         doc = process_dxf(doc)
 
-        # simpan hasil ke BytesIO
+                out_buf = io.BytesIO()
+        doc.write(out_buf)  # ERROR bisa muncul di beberapa versi ezdxf
+        # solusinya:
         out_buf = io.BytesIO()
-        doc.write(out_buf)
+        doc.write(out_buf) if hasattr(doc, "write") else doc.saveas(out_buf)
+        out_buf.seek(0)
+        
         st.download_button(
             "💾 Download DXF Hasil",
             data=out_buf.getvalue(),
             file_name="rapi_kapling.dxf",
             mime="application/dxf"
         )
+
     except Exception as e:
         st.error(f"❌ Gagal memproses file DXF: {e}")
     finally:
