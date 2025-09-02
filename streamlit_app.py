@@ -1,136 +1,125 @@
 import streamlit as st
 import ezdxf
-import math
-import tempfile
-import os
-import matplotlib.pyplot as plt
 from shapely.geometry import Polygon
-from shapely.affinity import rotate, translate
+import math
+import io
 
-# ====================
-# Fungsi bantu
-# ====================
-
+# ----------------- FUNGSI BANTU -----------------
 def text_polygon(x, y, text, height, rotation, width_factor=1.0):
-    """Buat bounding box teks (aproksimasi) sebagai polygon Shapely"""
+    """Bentuk bounding box teks sebagai polygon shapely"""
     text_length = len(text) * height * width_factor * 0.6
     w, h = text_length, height
     pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
-    poly = Polygon(pts)
-    return rotate(translate(poly, xoff=x, yoff=y), rotation, origin=(x, y))
 
-def fit_text_in_polygon(poly, text, init_height=2.5, margin=0.9):
+    rad = math.radians(rotation)
+    rot_pts = [(x + px*math.cos(rad) - py*math.sin(rad),
+                y + px*math.sin(rad) + py*math.cos(rad)) for px, py in pts]
+    return Polygon(rot_pts)
+
+def polygon_orientation(poly, mode="shortest"):
+    """Cari orientasi polygon berdasarkan sisi tertentu"""
+    coords = list(poly.exterior.coords)
+    best_len, angle = None, 0
+    for (x1, y1), (x2, y2) in zip(coords, coords[1:]):
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy)
+        if length > 1e-6:
+            ang = math.degrees(math.atan2(dy, dx))
+            if mode == "shortest":
+                if best_len is None or length < best_len:
+                    best_len, angle = length, ang
+            elif mode == "longest":
+                if best_len is None or length > best_len:
+                    best_len, angle = length, ang
+    return angle
+
+def fit_text_in_polygon(poly, text, init_height=2.5, margin=0.9, orient_mode="shortest"):
     """
     Cari posisi teks dalam polygon:
     - mulai dari centroid
-    - kalau nabrak garis, coba geser beberapa titik
-    - auto scale & auto rotate (0°, 90°, atau sisi panjang)
+    - kalau nabrak garis, geser sedikit
+    - auto scale & orientasi sesuai pilihan
     """
     cx, cy = poly.centroid.x, poly.centroid.y
-    rotations = [0, 90]
 
-    # deteksi sisi panjang polygon (pakai bounding box terorientasi)
-    minx, miny, maxx, maxy = poly.bounds
-    if (maxx - minx) > (maxy - miny):
-        rotations.append(0)  # horizontal
+    if orient_mode == "horizontal":
+        angle = 0
+    elif orient_mode == "vertical":
+        angle = 90
+    elif orient_mode == "longest":
+        angle = polygon_orientation(poly, "longest")
     else:
-        rotations.append(90)  # vertical
+        angle = polygon_orientation(poly, "shortest")
 
     search_offsets = [(0,0),(1,0),(-1,0),(0,1),(0,-1),
                       (1,1),(-1,1),(1,-1),(-1,-1)]
 
-    for rotation in rotations:
-        h = init_height
-        for _ in range(40):  # iterasi tinggi
-            for dx, dy in search_offsets:
-                tx, ty = cx + dx*h*0.5, cy + dy*h*0.5
-                tp = text_polygon(tx, ty, text, h, rotation)
-                if poly.contains(tp.buffer(-0.05)):  # aman dalam polygon
-                    return tx, ty, h, rotation
-            h *= 0.9
-    return cx, cy, init_height*0.3, 0  # fallback
+    h = init_height
+    for _ in range(50):  # iterasi sampai dapat ukuran pas
+        for dx, dy in search_offsets:
+            tx, ty = cx + dx*h*0.3, cy + dy*h*0.3
+            tp = text_polygon(tx, ty, text, h, angle)
+            if poly.contains(tp.buffer(-0.05)):  # buffer biar ga nabrak
+                return tx, ty, h, angle
+        h *= 0.9  # kalau gagal, perkecil
+    return cx, cy, init_height*0.3, angle  # fallback
 
-
-def process_dxf(input_file, output_file, texts):
-    doc = ezdxf.readfile(input_file)
+# ----------------- PROSES DXF -----------------
+def process_dxf(input_bytes, texts, orient_mode="shortest"):
+    doc = ezdxf.read(io.BytesIO(input_bytes))
     msp = doc.modelspace()
 
-    # Ambil polygon dari LWPOLYLINE
     polygons = []
     for e in msp.query("LWPOLYLINE"):
         if e.closed and len(e) >= 3:
             pts = [(p[0], p[1]) for p in e]
             poly = Polygon(pts)
-            if poly.is_valid and poly.area > 1e-3:
+            if poly.is_valid and poly.area > 1:
                 polygons.append(poly)
 
-    # Tambahkan teks sesuai urutan
     for poly, text in zip(polygons, texts):
-        x, y, h, rot = fit_text_in_polygon(poly, text)
+        x, y, h, rot = fit_text_in_polygon(poly, text, orient_mode=orient_mode)
         msp.add_text(
             text,
             dxfattribs={
                 "height": h,
                 "layer": "KAPLING_TEXT",
-                "color": 6
+                "color": 6  # magenta
             }
         ).set_pos((x, y), align="MIDDLE_CENTER").set_rotation(rot)
 
-    doc.saveas(output_file)
-    return polygons, texts
+    out = io.BytesIO()
+    doc.write(out)
+    return out.getvalue()
 
+# ----------------- STREAMLIT UI -----------------
+st.title("📐 Auto Label Kapling DXF")
+st.write("Upload DXF lalu otomatis diberi teks sesuai polygon.")
 
-def preview(polygons, texts):
-    """Tampilkan preview polygon + teks"""
-    fig, ax = plt.subplots()
-    for poly, text in zip(polygons, texts):
-        x, y = poly.exterior.xy
-        ax.plot(x, y, "k-")
-        cx, cy = poly.centroid.x, poly.centroid.y
-        ax.text(cx, cy, text, ha="center", va="center", fontsize=8, color="magenta")
-    ax.set_aspect("equal")
-    st.pyplot(fig)
+uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
+start_num = st.number_input("Nomor awal", min_value=1, value=1)
+end_num = st.number_input("Nomor akhir", min_value=10, value=10)
 
+orient_mode = st.selectbox(
+    "Orientasi teks",
+    options=["shortest", "longest", "horizontal", "vertical"],
+    format_func=lambda x: {
+        "shortest": "Sisi Terpendek",
+        "longest": "Sisi Terpanjang",
+        "horizontal": "Horizontal (0°)",
+        "vertical": "Vertical (90°)"
+    }[x]
+)
 
-# ====================
-# Streamlit UI
-# ====================
+if uploaded_file is not None:
+    if st.button("Proses DXF"):
+        texts = [f"NN-{i}" for i in range(start_num, end_num+1)]
+        input_bytes = uploaded_file.read()
+        output_bytes = process_dxf(input_bytes, texts, orient_mode=orient_mode)
 
-st.set_page_config(page_title="📐 Rapikan Teks DXF Kapling", layout="wide")
-st.title("📐 Rapikan Teks DXF Kapling")
-
-uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
-
-if uploaded_file:
-    texts_input = st.text_area("Masukkan daftar teks (pisahkan dengan koma)", "K-01,K-02,K-03")
-    texts = [t.strip() for t in texts_input.split(",") if t.strip()]
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp_in:
-        tmp_in.write(uploaded_file.read())
-        tmp_in_path = tmp_in.name
-
-    tmp_out_path = tmp_in_path.replace(".dxf", "_out.dxf")
-
-    try:
-        polygons, used_texts = process_dxf(tmp_in_path, tmp_out_path, texts)
-        st.success("✅ DXF berhasil diproses!")
-
-        # Preview
-        preview(polygons, used_texts)
-
-        # Download hasil
-        with open(tmp_out_path, "rb") as f:
-            st.download_button(
-                "💾 Download DXF Hasil",
-                data=f.read(),
-                file_name="rapi_kapling.dxf",
-                mime="application/dxf"
-            )
-
-    except Exception as e:
-        st.error(f"❌ Gagal memproses file DXF: {e}")
-
-    finally:
-        os.unlink(tmp_in_path)
-        if os.path.exists(tmp_out_path):
-            os.unlink(tmp_out_path)
+        st.download_button(
+            "💾 Download DXF Hasil",
+            data=output_bytes,
+            file_name="rapi_kapling.dxf",
+            mime="application/dxf"
+        )
