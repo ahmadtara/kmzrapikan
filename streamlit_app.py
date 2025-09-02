@@ -3,8 +3,6 @@ import ezdxf
 import numpy as np
 import io
 import math
-import tempfile
-import os
 
 st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 
@@ -24,7 +22,7 @@ def polyline_bounds_and_angle(poly):
     xs, ys = zip(*pts)
     xmin, ymin, xmax, ymax = min(xs), min(ys), max(xs), max(ys)
 
-    # sederhana: ambil sisi bawah sebagai vektor (pt0 → pt1)
+    # ambil sisi bawah sebagai vektor (pt0 → pt1)
     if len(pts) >= 2:
         dx = pts[1][0] - pts[0][0]
         dy = pts[1][1] - pts[0][1]
@@ -115,13 +113,10 @@ st.title("📐 Rapikan Teks DXF Kapling (Tetap di Posisi Asal)")
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
 if uploaded_file:
-    # simpan ke temporary file agar kompatibel ezdxf.readfile()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
-        tmp.write(uploaded_file.read())
-        tmp_path = tmp.name
-
     try:
-        doc = ezdxf.readfile(tmp_path)
+        # pakai BytesIO langsung
+        bytes_io = io.BytesIO(uploaded_file.read())
+        doc = ezdxf.read(bytes_io)  # read() bisa menerima file-like object
         doc = process_dxf(doc)
 
         out_buf = io.BytesIO()
@@ -134,5 +129,3 @@ if uploaded_file:
         )
     except Exception as e:
         st.error(f"❌ Gagal memproses file DXF: {e}")
-    finally:
-        os.unlink(tmp_path)  # hapus temporary file
