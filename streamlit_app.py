@@ -1,125 +1,82 @@
 import streamlit as st
-import ezdxf
-from shapely.geometry import Polygon, Point
-import math
-import io
+import zipfile
+import os
+import shutil
+from lxml import etree
 
-# --- Fungsi bantu ---
-def text_polygon(x, y, text, height, rotation, width_factor=1.0):
-    text_length = len(text) * height * width_factor * 0.6
-    w, h = text_length, height
-    pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
+# Fungsi pembersih namespace
+def clean_namespaces(elem):
+    if isinstance(elem.tag, str) and (elem.tag.startswith("ns1:") or elem.tag.startswith("gx:")):
+        return None
+    bad_attrs = [a for a in elem.attrib if a.startswith("ns1:") or a.startswith("gx:")]
+    for a in bad_attrs:
+        del elem.attrib[a]
+    to_remove = []
+    for child in elem:
+        cleaned = clean_namespaces(child)
+        if cleaned is None:
+            to_remove.append(child)
+    for child in to_remove:
+        elem.remove(child)
+    return elem
 
-    rad = math.radians(rotation)
-    rot_pts = [(x + px*math.cos(rad) - py*math.sin(rad),
-                y + px*math.sin(rad) + py*math.cos(rad)) for px, py in pts]
-    return Polygon(rot_pts)
+def clean_kmz(kmz_bytes, output_kml, output_kmz):
+    extract_dir = "temp_extract"
+    if os.path.exists(extract_dir):
+        shutil.rmtree(extract_dir)
+    os.makedirs(extract_dir, exist_ok=True)
 
-def fit_text_in_polygon(poly, text, init_height=2.5, margin=0.9, mode="shortest"):
-    cx, cy = poly.centroid.x, poly.centroid.y
-    search_offsets = [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]
+    # Simpan upload sebagai sementara
+    tmp_kmz = "uploaded.kmz"
+    with open(tmp_kmz, "wb") as f:
+        f.write(kmz_bytes)
 
-    # pilih mode rotasi
-    rotations = [0] if mode == "horizontal" else [0, 90]
+    # Ekstrak KMZ
+    with zipfile.ZipFile(tmp_kmz, 'r') as kmz:
+        kmz.extractall(extract_dir)
 
-    for rotation in rotations:
-        h = init_height
-        for _ in range(50):
-            for dx, dy in search_offsets:
-                tx, ty = cx + dx*h*0.3, cy + dy*h*0.3
-                tp = text_polygon(tx, ty, text, h, rotation)
-                if poly.contains(tp.buffer(-0.01)):
-                    return tx, ty, h, rotation
-            h *= 0.9
-    return cx, cy, init_height*0.3, 0
+    # Cari file KML
+    main_kml = None
+    for root, dirs, files in os.walk(extract_dir):
+        for f in files:
+            if f.endswith(".kml"):
+                main_kml = os.path.join(root, f)
+                break
+        if main_kml:
+            break
 
-# --- Proses DXF ---
-def process_dxf(doc, mode="shortest"):
-    msp = doc.modelspace()
+    if not main_kml:
+        raise FileNotFoundError("Tidak ada file .kml di dalam KMZ")
 
-    # Ambil polygon
-    polygons = []
-    for e in msp.query("LWPOLYLINE"):
-        if e.closed and len(e) >= 3:
-            pts = [(p[0], p[1]) for p in e]
-            poly = Polygon(pts)
-            if poly.is_valid:
-                polygons.append(poly)
+    parser = etree.XMLParser(remove_blank_text=True, recover=True)
+    tree = etree.parse(main_kml, parser)
+    root = tree.getroot()
+    clean_namespaces(root)
 
-    # Ambil teks
-    texts = list(msp.query("TEXT")) + list(msp.query("MTEXT")) \
-          + list(msp.query("ATTRIB")) + list(msp.query("ATTDEF"))
+    # Simpan KML bersih
+    tree.write(output_kml, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
-    st.info(f"📌 Ditemukan {len(polygons)} polygon & {len(texts)} teks di file.")
+    # Bungkus ulang jadi KMZ
+    with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(output_kml, os.path.basename(output_kml))
 
-    adjusted = 0
-    for t in texts:
-        try:
-            if t.dxftype() == "MTEXT":
-                text_str = t.text
-                x, y = t.dxf.insert[:2]
-            else:
-                text_str = t.dxf.text
-                x, y = t.dxf.insert[:2]
-        except Exception:
-            continue
+    shutil.rmtree(extract_dir)
+    os.remove(tmp_kmz)
 
-        # cari polygon terdekat
-        nearest_poly = None
-        nearest_dist = 1e9
-        for poly in polygons:
-            dist = poly.centroid.distance(Point(x, y))
-            if dist < nearest_dist:
-                nearest_poly = poly
-                nearest_dist = dist
+# === Streamlit App ===
+st.title("🗺️ Pembersih KMZ KML Namespace")
 
-        if nearest_poly:
-            tx, ty, h, rot = fit_text_in_polygon(nearest_poly, text_str, init_height=t.dxf.height, mode=mode)
-            t.dxf.insert = (tx, ty)
-            t.dxf.height = h
-            t.dxf.rotation = rot
-            adjusted += 1
+uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
 
-    st.success(f"✅ {adjusted} teks berhasil dirapikan.")
-    return doc
+if uploaded_file:
+    output_kml = "clean_output.kml"
+    output_kmz = "clean_output.kmz"
 
-# --- Debug Entities ---
-def debug_entities(doc):
-    msp = doc.modelspace()
-    all_entities = list(msp)
-    st.write("📌 Jumlah total entitas:", len(all_entities))
+    if st.button("Bersihkan"):
+        clean_kmz(uploaded_file.read(), output_kml, output_kmz)
 
-    text_like = []
-    for e in all_entities:
-        if e.dxftype() in ["TEXT", "MTEXT", "ATTRIB", "ATTDEF"]:
-            text_like.append(e)
+        with open(output_kml, "rb") as f:
+            st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
 
-    st.write("📌 Jumlah entitas teks-like:", len(text_like))
-    for e in text_like[:20]:  # tampilkan contoh max 20
-        try:
-            if e.dxftype() == "MTEXT":
-                txt = e.text
-            else:
-                txt = e.dxf.text
-        except:
-            txt = "(tidak bisa dibaca)"
-        st.write(f"➡️ {e.dxftype()} | Layer: {e.dxf.layer} | Isi: {txt[:50]}")
-
-# --- Streamlit UI ---
-st.title("📐 DXF Kapling Rapi")
-
-uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
-mode = st.radio("Mode rotasi teks", ["shortest", "horizontal"])
-
-action = st.selectbox("Pilih Aksi", ["Rapikan Teks", "Debug Entities"])
-
-if uploaded_file is not None:
-    doc = ezdxf.read(uploaded_file)
-
-    if action == "Rapikan Teks":
-        new_doc = process_dxf(doc, mode=mode)
-        buf = io.BytesIO()
-        new_doc.saveas(buf)
-        st.download_button("💾 Download DXF hasil", data=buf.getvalue(), file_name="rapi_kapling.dxf")
-    elif action == "Debug Entities":
-        debug_entities(doc)
+        with open(output_kmz, "rb") as f:
+            st.download_button("⬇️ Download KMZ Bersih", f, file_name="clean.kmz")
