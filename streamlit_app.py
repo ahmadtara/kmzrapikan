@@ -2,22 +2,15 @@ import streamlit as st
 import zipfile
 import os
 import tempfile
+import re
 from lxml import etree
-from io import BytesIO
 
 # ==============================
-# WHITELIST PREFIX (HPDB + DWG)
+# TREE-BASED CLEANER (DWG-safe)
 # ==============================
-VALID_PREFIXES = {"kml", "gx", "atom"}  # tambahkan sesuai kebutuhan
+VALID_PREFIXES = {"kml", "gx", "atom"}
 
-# ==============================
-# TREE-BASED CLEANER
-# ==============================
 def remove_bad_prefixes_tree(elem, valid_prefixes=VALID_PREFIXES):
-    """
-    Hapus atribut dan tag dengan prefix tak dikenal,
-    tetap pertahankan default namespace dan whitelist prefix.
-    """
     # Hapus atribut tak dikenal
     for attr in list(elem.attrib):
         if ":" in attr:
@@ -28,8 +21,7 @@ def remove_bad_prefixes_tree(elem, valid_prefixes=VALID_PREFIXES):
     # Hapus prefix tak dikenal di tag
     if isinstance(elem.tag, str):
         if "}" in elem.tag:
-            # Tag default namespace aman
-            pass
+            pass  # default namespace aman
         elif ":" in elem.tag:
             prefix = elem.tag.split(":")[0]
             if prefix not in valid_prefixes:
@@ -40,19 +32,39 @@ def remove_bad_prefixes_tree(elem, valid_prefixes=VALID_PREFIXES):
         remove_bad_prefixes_tree(child, valid_prefixes)
 
 # ==============================
-# MEMBERSIHKAN KML
+# RAW XML CLEANER (HPDB-safe)
+# ==============================
+def clean_raw_xml_for_hpdb(raw_xml: bytes) -> bytes:
+    # Hapus semua xmlns:xxx
+    raw_xml = re.sub(rb'\s+xmlns:[a-zA-Z0-9_]+="[^"]*"', b"", raw_xml)
+    # Hapus prefix dari tag (kecuali <coordinates>)
+    raw_xml = re.sub(rb"<(/?)([a-zA-Z0-9_]+:)?(coordinates)", rb"<\1\3", raw_xml)
+    raw_xml = re.sub(rb"<(/?)([a-zA-Z0-9_]+:)(\w+)", rb"<\1\3", raw_xml)
+    # Hapus atribut dengan prefix
+    raw_xml = re.sub(rb"\s+[a-zA-Z0-9_]+:\w+=\"[^\"]*\"", b"", raw_xml)
+    return raw_xml
+
+# ==============================
+# CLEAN KML
 # ==============================
 def clean_kml_file(input_path, output_path):
-    parser = etree.XMLParser(remove_blank_text=True, recover=True)
-    tree = etree.parse(input_path, parser)
-    root = tree.getroot()
+    # Baca raw
+    with open(input_path, "rb") as f:
+        raw_xml = f.read()
+    raw_xml = clean_raw_xml_for_hpdb(raw_xml)
 
+    parser = etree.XMLParser(remove_blank_text=True, recover=True)
+    root = etree.fromstring(raw_xml, parser)
+
+    # Tree-based cleaning (DWG-safe)
     remove_bad_prefixes_tree(root)
 
+    # Simpan
+    tree = etree.ElementTree(root)
     tree.write(output_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
 # ==============================
-# MEMBERSIHKAN KMZ
+# CLEAN KMZ
 # ==============================
 def clean_kmz(kmz_bytes, output_kml, output_kmz):
     with tempfile.TemporaryDirectory() as extract_dir:
@@ -64,7 +76,7 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
         with zipfile.ZipFile(tmp_kmz, 'r') as kmz:
             kmz.extractall(extract_dir)
 
-        # Cari file KML utama
+        # Cari KML utama
         main_kml = None
         for root_dir, dirs, files in os.walk(extract_dir):
             for f in files:
@@ -80,7 +92,7 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
         # Bersihkan KML
         clean_kml_file(main_kml, output_kml)
 
-        # Bungkus ulang menjadi KMZ
+        # Bungkus ulang KMZ
         with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
             for folder, _, files in os.walk(extract_dir):
                 for file in files:
@@ -89,55 +101,11 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
                     zf.write(file_path, arcname)
 
 # ==============================
-# EXTRACT PLACEMARKS AMAN
-# ==============================
-def extract_placemarks(kmz_bytes):
-    import xml.etree.ElementTree as ET
-
-    def recurse_folder(folder, ns, path=""):
-        items = []
-        name_el = folder.find("kml:name", ns)
-        folder_name = name_el.text.upper() if name_el is not None else "UNKNOWN"
-        new_path = f"{path}/{folder_name}" if path else folder_name
-
-        for sub in folder.findall("kml:Folder", ns):
-            items += recurse_folder(sub, ns, new_path)
-
-        for pm in folder.findall("kml:Placemark", ns):
-            nm = pm.find("kml:name", ns)
-            coord = pm.find(".//kml:coordinates", ns)
-            # === CEK KEAMANAN KOORDINAT ===
-            if nm is not None and coord is not None and coord.text and coord.text.strip():
-                parts = coord.text.strip().split(",")
-                if len(parts) >= 2:
-                    try:
-                        lon, lat = map(float, parts[:2])
-                        items.append({
-                            "name": nm.text.strip(),
-                            "lat": lat,
-                            "lon": lon,
-                            "path": new_path
-                        })
-                    except ValueError:
-                        # koordinat tidak valid, skip
-                        continue
-        return items
-
-    with zipfile.ZipFile(BytesIO(kmz_bytes)) as z:
-        kml_file = [f for f in z.namelist() if f.lower().endswith(".kml")][0]
-        root = ET.parse(z.open(kml_file)).getroot()
-        ns = {"kml": "http://www.opengis.net/kml/2.2"}
-        all_pm = []
-        for folder in root.findall(".//kml:Folder", ns):
-            all_pm += recurse_folder(folder, ns)
-        return all_pm
-
-# ==============================
 # STREAMLIT APP
 # ==============================
-st.title("🗺️ KMZ Cleaner Aman untuk HPDB & DWG")
+st.title("🗺️ KMZ Cleaner Aman HPDB & DWG")
 
-uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
+uploaded_file = st.file_uploader("Upload KMZ", type=["kmz"])
 
 if uploaded_file:
     output_kml = "clean_output.kml"
@@ -147,12 +115,7 @@ if uploaded_file:
         try:
             kmz_bytes = uploaded_file.read()
             clean_kmz(kmz_bytes, output_kml, output_kmz)
-
-            st.success("✅ File berhasil dibersihkan tanpa unbound prefix!")
-
-            # Cek Placemark aman
-            placemarks = extract_placemarks(kmz_bytes)
-            st.write(f"Jumlah Placemark valid: {len(placemarks)}")
+            st.success("✅ File berhasil dibersihkan untuk HPDB & DWG")
 
             with open(output_kml, "rb") as f:
                 st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
