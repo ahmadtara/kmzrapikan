@@ -35,15 +35,23 @@ def polyline_bounds_and_angle(poly):
 def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
     """
     Skalakan tinggi teks agar muat dalam kotak.
-    Posisi teks tidak diubah.
     """
     x1, y1, x2, y2 = box_bounds
     box_h = abs(y2 - y1) * margin
-    # tinggi teks baru = minimum antara tinggi asli dan tinggi kotak
     return min(text_entity.dxf.height, box_h)
 
 
-def process_dxf(doc, auto_vertical=True):
+def move_text_to_center(text_entity, box_bounds):
+    """
+    Pindahkan teks ke tengah kotak (center X, Y).
+    """
+    xmin, ymin, xmax, ymax = box_bounds
+    cx = (xmin + xmax) / 2
+    cy = (ymin + ymax) / 2
+    text_entity.dxf.insert = (cx, cy)
+
+
+def process_dxf(doc, auto_vertical=True, center_text=True):
     msp = doc.modelspace()
 
     # Ambil semua polyline sebagai kotak
@@ -80,40 +88,45 @@ def process_dxf(doc, auto_vertical=True):
                 nearest_dist = dist
 
         if nearest_box:
-            # ---- SCALE TEKS sesuai orientasi kotak ----
-            new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
-            t.dxf.height = new_h
-
             xmin, ymin, xmax, ymax = nearest_box["bounds"]
             box_w = abs(xmax - xmin) * 0.9
             box_h = abs(ymax - ymin) * 0.9
 
+            # ---- SCALE TEKS ----
+            new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
+            t.dxf.height = new_h
+
+            # ---- CEK KELEBARAN TEKS ----
             text_len = len(t.dxf.text)
             est_w = text_len * t.dxf.height * 0.6  # estimasi panjang teks
 
             if auto_vertical and est_w > box_w:
                 # Kalau masih kepanjangan → rotate vertical
                 t.dxf.rotation = nearest_box["angle"] + 90
-                # scale ulang biar muat ke tinggi box
                 if text_len > 0:
                     t.dxf.height = min(t.dxf.height, box_h / (text_len * 0.6))
             else:
                 # Normal sejajar kotak
                 t.dxf.rotation = nearest_box["angle"]
 
+            # ---- PINDAH KE TENGAH ----
+            if center_text:
+                move_text_to_center(t, nearest_box["bounds"])
+
             adjusted += 1
 
-    st.success(f"✅ {adjusted} teks berhasil disesuaikan (auto scale + auto rotate vertical jika nabrak).")
+    st.success(f"✅ {adjusted} teks berhasil disesuaikan (scale + rotate + center).")
     return doc
 
 # =======================
 # Streamlit UI
 # =======================
 
-st.title("📐 Rapikan Teks DXF Kapling (Posisi Tetap, Hanya Scale & Rotate)")
+st.title("📐 Rapikan Teks DXF Kapling (Auto Scale + Rotate + Center)")
 
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 auto_vertical = st.checkbox("Aktifkan auto-rotate vertical jika teks kepanjangan", value=True)
+center_text = st.checkbox("Pusatkan teks di dalam kotak", value=True)
 
 if uploaded_file:
     # Simpan sementara file asli
@@ -124,7 +137,7 @@ if uploaded_file:
     try:
         # Buka DXF asli
         doc = ezdxf.readfile(tmp_path)
-        doc = process_dxf(doc, auto_vertical=auto_vertical)
+        doc = process_dxf(doc, auto_vertical=auto_vertical, center_text=center_text)
 
         # Simpan kembali ke file sementara (overwrite)
         doc.saveas(tmp_path)
