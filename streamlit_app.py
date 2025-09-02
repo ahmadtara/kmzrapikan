@@ -1,125 +1,108 @@
 import streamlit as st
-import ezdxf
-from shapely.geometry import Polygon, Point
-import math
-import io
+import zipfile
+import xml.etree.ElementTree as ET
+from io import BytesIO
 
-# --- Fungsi bantu ---
-def text_polygon(x, y, text, height, rotation, width_factor=1.0):
-    text_length = len(text) * height * width_factor * 0.6
-    w, h = text_length, height
-    pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
+# Namespace standar KML
+KML_NS = "http://www.opengis.net/kml/2.2"
+ET.register_namespace("", KML_NS)
 
-    rad = math.radians(rotation)
-    rot_pts = [(x + px*math.cos(rad) - py*math.sin(rad),
-                y + px*math.sin(rad) + py*math.cos(rad)) for px, py in pts]
-    return Polygon(rot_pts)
+def parse_kml_from_kmz(kmz_bytes):
+    with zipfile.ZipFile(BytesIO(kmz_bytes), "r") as kmz:
+        with kmz.open("doc.kml") as kml_file:
+            tree = ET.parse(kml_file)
+            return tree
 
-def fit_text_in_polygon(poly, text, init_height=2.5, margin=0.9, mode="shortest"):
-    cx, cy = poly.centroid.x, poly.centroid.y
-    search_offsets = [(0,0),(1,0),(-1,0),(0,1),(0,-1),(1,1),(-1,1),(1,-1),(-1,-1)]
+def build_new_kml(hp_list, pole_list):
+    kml = ET.Element("{%s}kml" % KML_NS)
+    document = ET.SubElement(kml, "Document")
 
-    # pilih mode rotasi
-    rotations = [0] if mode == "horizontal" else [0, 90]
+    # HP COVER A/B/C/D
+    for key, elements in hp_list.items():
+        folder = ET.SubElement(document, "Folder")
+        ET.SubElement(folder, "name").text = f"HP COVER {key.upper()}"
+        for el in elements:
+            folder.append(el)
 
-    for rotation in rotations:
-        h = init_height
-        for _ in range(50):
-            for dx, dy in search_offsets:
-                tx, ty = cx + dx*h*0.3, cy + dy*h*0.3
-                tp = text_polygon(tx, ty, text, h, rotation)
-                if poly.contains(tp.buffer(-0.01)):
-                    return tx, ty, h, rotation
-            h *= 0.9
-    return cx, cy, init_height*0.3, 0
+    # LINE A/B/C/D
+    for key, elements in pole_list.items():
+        folder = ET.SubElement(document, "Folder")
+        ET.SubElement(folder, "name").text = f"LINE {key.upper()}"
+        for el in elements:
+            folder.append(el)
 
-# --- Proses DXF ---
-def process_dxf(doc, mode="shortest"):
-    msp = doc.modelspace()
+    return ET.ElementTree(kml)
 
-    # Ambil polygon
-    polygons = []
-    for e in msp.query("LWPOLYLINE"):
-        if e.closed and len(e) >= 3:
-            pts = [(p[0], p[1]) for p in e]
-            poly = Polygon(pts)
-            if poly.is_valid:
-                polygons.append(poly)
+def clean_and_group(tree):
+    root = tree.getroot()
+    hp_list = {"a": [], "b": [], "c": [], "d": []}
+    pole_list = {"a": [], "b": [], "c": [], "d": []}
 
-    # Ambil teks
-    texts = list(msp.query("TEXT")) + list(msp.query("MTEXT")) \
-          + list(msp.query("ATTRIB")) + list(msp.query("ATTDEF"))
-
-    st.info(f"📌 Ditemukan {len(polygons)} polygon & {len(texts)} teks di file.")
-
-    adjusted = 0
-    for t in texts:
-        try:
-            if t.dxftype() == "MTEXT":
-                text_str = t.text
-                x, y = t.dxf.insert[:2]
-            else:
-                text_str = t.dxf.text
-                x, y = t.dxf.insert[:2]
-        except Exception:
+    # Cari semua Placemark
+    for pm in root.findall(".//{%s}Placemark" % KML_NS):
+        name_el = pm.find("{%s}name" % KML_NS)
+        if name_el is None or not name_el.text:
             continue
+        name = name_el.text.lower()
 
-        # cari polygon terdekat
-        nearest_poly = None
-        nearest_dist = 1e9
-        for poly in polygons:
-            dist = poly.centroid.distance(Point(x, y))
-            if dist < nearest_dist:
-                nearest_poly = poly
-                nearest_dist = dist
+        # Grouping HP
+        if "hp" in name:
+            for key in hp_list.keys():
+                if key in name:
+                    hp_list[key].append(pm)
+                    break
 
-        if nearest_poly:
-            tx, ty, h, rot = fit_text_in_polygon(nearest_poly, text_str, init_height=t.dxf.height, mode=mode)
-            t.dxf.insert = (tx, ty)
-            t.dxf.height = h
-            t.dxf.rotation = rot
-            adjusted += 1
+        # Grouping POLE
+        if "pole" in name:
+            for key in pole_list.keys():
+                if key in name:
+                    pole_list[key].append(pm)
+                    break
 
-    st.success(f"✅ {adjusted} teks berhasil dirapikan.")
-    return doc
+    return hp_list, pole_list
 
-# --- Debug Entities ---
-def debug_entities(doc):
-    msp = doc.modelspace()
-    all_entities = list(msp)
-    st.write("📌 Jumlah total entitas:", len(all_entities))
+def update_kmz(kmz_bytes, new_kml_tree):
+    # simpan doc.kml baru ke buffer
+    new_kml_bytes = BytesIO()
+    new_kml_tree.write(new_kml_bytes, encoding="utf-8", xml_declaration=True)
 
-    text_like = []
-    for e in all_entities:
-        if e.dxftype() in ["TEXT", "MTEXT", "ATTRIB", "ATTDEF"]:
-            text_like.append(e)
+    out_buffer = BytesIO()
+    with zipfile.ZipFile(BytesIO(kmz_bytes), "r") as old_kmz:
+        with zipfile.ZipFile(out_buffer, "w") as new_kmz:
+            for item in old_kmz.infolist():
+                if item.filename != "doc.kml":
+                    new_kmz.writestr(item, old_kmz.read(item.filename))
+            # tulis doc.kml baru
+            new_kmz.writestr("doc.kml", new_kml_bytes.getvalue())
 
-    st.write("📌 Jumlah entitas teks-like:", len(text_like))
-    for e in text_like[:20]:  # tampilkan contoh max 20
-        try:
-            if e.dxftype() == "MTEXT":
-                txt = e.text
-            else:
-                txt = e.dxf.text
-        except:
-            txt = "(tidak bisa dibaca)"
-        st.write(f"➡️ {e.dxftype()} | Layer: {e.dxf.layer} | Isi: {txt[:50]}")
+    return out_buffer.getvalue()
 
-# --- Streamlit UI ---
-st.title("📐 DXF Kapling Rapi")
+# ================== STREAMLIT APP ==================
 
-uploaded_file = st.file_uploader("Upload file DXF", type=["dxf"])
-mode = st.radio("Mode rotasi teks", ["shortest", "horizontal"])
+st.title("📂 KMZ Rapikan HP & POLE")
 
-action = st.selectbox("Pilih Aksi", ["Rapikan Teks", "Debug Entities"])
+uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
 
-if uploaded_file is not None:
-    doc = ezdxf.readfile(uploaded_file)
+if uploaded_file:
+    kmz_bytes = uploaded_file.read()
 
-    if action == "Rapikan Teks":
-        new_doc = process_dxf(doc, mode=mode)
-        buf = io.BytesIO()
-        new_doc.saveas(buf)
-        st.download_button("💾 Download DXF hasil", data=buf.getvalue(), file_name="rapi_kapling.dxf")
-    elif action == "Debug Entities":
-        debug_entities(doc)
+    # Parse doc.kml
+    tree = parse_kml_from_kmz(kmz_bytes)
+
+    # Bersihkan & Group
+    hp_list, pole_list = clean_and_group(tree)
+
+    # Bangun KML baru
+    new_kml_tree = build_new_kml(hp_list, pole_list)
+
+    # Update ke KMZ lama
+    new_kmz_bytes = update_kmz(kmz_bytes, new_kml_tree)
+
+    st.success("KMZ berhasil dirapikan ✅")
+
+    st.download_button(
+        "⬇️ Download KMZ hasil",
+        data=new_kmz_bytes,
+        file_name="rapikan.kmz",
+        mime="application/vnd.google-earth.kmz"
+    )
