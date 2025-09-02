@@ -4,7 +4,7 @@ import numpy as np
 import math
 import tempfile
 import os
-import io  # fix error "name 'io' is not defined"
+import io
 
 st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 
@@ -13,10 +13,6 @@ st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 # =======================
 
 def polyline_bounds_and_angle(poly):
-    """
-    Hitung bounding box dan sudut rotasi (derajat) dari POLYLINE/LWPOLYLINE.
-    Angle dihitung dari sisi bawah kotak relatif sumbu X.
-    """
     try:
         pts = [tuple(v) for v in poly.get_points("xy")]
     except Exception:
@@ -33,10 +29,6 @@ def polyline_bounds_and_angle(poly):
     return (xmin, ymin, xmax, ymax), angle
 
 def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
-    """
-    Skalakan tinggi teks agar muat dalam kotak, tanpa mengubah posisi.
-    margin: persentase ruang kosong dalam kotak
-    """
     x1, y1, x2, y2 = box_bounds
     box_w = abs(x2 - x1) * margin
     box_h = abs(y2 - y1) * margin
@@ -54,7 +46,6 @@ def process_dxf(doc):
     boxes = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
         try:
-            # ambil semua polyline sebagai kotak sementara
             bounds, angle = polyline_bounds_and_angle(e)
             boxes.append({"bounds": bounds, "angle": angle})
         except Exception:
@@ -72,7 +63,6 @@ def process_dxf(doc):
         except Exception:
             continue
 
-        # cari kotak terdekat
         nearest_box = None
         nearest_dist = 1e9
         for b in boxes:
@@ -85,10 +75,8 @@ def process_dxf(doc):
                 nearest_dist = dist
 
         if nearest_box:
-            # scale tinggi teks agar muat kotak
             new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
             t.dxf.height = new_h
-            # rotate teks sesuai kotak
             try:
                 t.dxf.rotation = nearest_box["angle"]
             except Exception:
@@ -107,7 +95,6 @@ st.title("📐 Rapikan Teks DXF Kapling (Tetap di Posisi Asal)")
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
 if uploaded_file:
-    # Simpan ke temporary file agar kompatibel ezdxf.readfile()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
@@ -116,13 +103,11 @@ if uploaded_file:
         doc = ezdxf.readfile(tmp_path)
         doc = process_dxf(doc)
 
-                out_buf = io.BytesIO()
-        doc.write(out_buf)  # ERROR bisa muncul di beberapa versi ezdxf
-        # solusinya:
+        # simpan ke BytesIO dengan saveas (paling aman)
         out_buf = io.BytesIO()
-        doc.write(out_buf) if hasattr(doc, "write") else doc.saveas(out_buf)
+        doc.saveas(out_buf)
         out_buf.seek(0)
-        
+
         st.download_button(
             "💾 Download DXF Hasil",
             data=out_buf.getvalue(),
@@ -133,4 +118,4 @@ if uploaded_file:
     except Exception as e:
         st.error(f"❌ Gagal memproses file DXF: {e}")
     finally:
-        os.unlink(tmp_path)  # hapus temporary file
+        os.unlink(tmp_path)
