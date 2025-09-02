@@ -1,31 +1,53 @@
 import streamlit as st
 import ezdxf
 import numpy as np
-import tempfile
-import os
+import io
+import math
 
-st.set_page_config(page_title="DXF → DXF Rapikan Teks", layout="wide")
+st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 
-def polyline_bounds(poly):
-    """Hitung bounding box dari POLYLINE/LWPOLYLINE"""
-    points = [p for p in poly.get_points('xy')]
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
-    return min(xs), min(ys), max(xs), max(ys)
+# =======================
+# Helper Functions
+# =======================
 
-def center_of_bounds(bounds):
-    xmin, ymin, xmax, ymax = bounds
-    return (xmin + xmax) / 2, (ymin + ymax) / 2
+def polyline_bounds_and_angle(poly):
+    """
+    Hitung bounding box dan sudut rotasi (derajat) dari POLYLINE/LWPOLYLINE.
+    Angle dihitung dari sisi bawah kotak relatif sumbu X.
+    """
+    try:
+        pts = [tuple(v) for v in poly.get_points("xy")]
+    except Exception:
+        pts = [tuple(v[:2]) for v in poly.points()]
+    xs, ys = zip(*pts)
+    xmin, ymin, xmax, ymax = min(xs), min(ys), max(xs), max(ys)
 
-def fit_text_height(text, bounds, margin=0.9):
-    """Skalakan tinggi teks agar muat dalam kotak"""
-    xmin, ymin, xmax, ymax = bounds
-    box_w = xmax - xmin
-    box_h = ymax - ymin
-    if box_w <= 0 or box_h <= 0:
-        return text.dxf.height
-    factor = margin * min(box_w, box_h)
-    return factor
+    # sederhana: ambil sisi bawah sebagai vektor (pt0 → pt1)
+    if len(pts) >= 2:
+        dx = pts[1][0] - pts[0][0]
+        dy = pts[1][1] - pts[0][1]
+        angle = math.degrees(math.atan2(dy, dx))
+    else:
+        angle = 0
+    return (xmin, ymin, xmax, ymax), angle
+
+def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
+    """
+    Skalakan tinggi teks agar muat dalam kotak, tanpa mengubah posisi.
+    margin: persentase ruang kosong dalam kotak
+    """
+    x1, y1, x2, y2 = box_bounds
+    box_w = abs(x2 - x1) * margin
+    box_h = abs(y2 - y1) * margin
+
+    try:
+        text_w = len(text_entity.dxf.text) * text_entity.dxf.height * 0.6
+        text_h = text_entity.dxf.height
+    except Exception:
+        return text_entity.dxf.height
+
+    scale = min(box_w / max(text_w, 1e-6), box_h / max(text_h, 1e-6))
+    return max(0.1, text_entity.dxf.height * scale)
 
 def process_dxf(doc):
     msp = doc.modelspace()
@@ -33,8 +55,13 @@ def process_dxf(doc):
     # kumpulkan kotak
     boxes = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
-        if e.closed:  # hanya polygon tertutup
-            boxes.append(polyline_bounds(e))
+        try:
+            if (e.dxftype() == "LWPOLYLINE" and e.closed) or \
+               (e.dxftype() == "POLYLINE" and e.is_closed):
+                bounds, angle = polyline_bounds_and_angle(e)
+                boxes.append({"bounds": bounds, "angle": angle})
+        except Exception:
+            continue
 
     # kumpulkan teks
     texts = list(msp.query("TEXT MTEXT"))
@@ -42,64 +69,62 @@ def process_dxf(doc):
     st.write(f"📦 Jumlah kotak terdeteksi: {len(boxes)}")
     st.write(f"🔤 Jumlah teks terdeteksi: {len(texts)}")
 
-    moved = 0
+    adjusted = 0
     for t in texts:
-        x, y = t.dxf.insert[0], t.dxf.insert[1]
+        try:
+            x, y = t.dxf.insert[0], t.dxf.insert[1]
+        except Exception:
+            continue
 
-        # cari kotak terdekat
+        # cari kotak terdekat untuk teks
         nearest_box = None
         nearest_dist = 1e9
         for b in boxes:
-            cx, cy = center_of_bounds(b)
+            xmin, ymin, xmax, ymax = b["bounds"]
+            # centroid kotak
+            cx = (xmin + xmax) / 2
+            cy = (ymin + ymax) / 2
             dist = np.hypot(cx - x, cy - y)
             if dist < nearest_dist:
                 nearest_box = b
                 nearest_dist = dist
 
         if nearest_box:
-            cx, cy = center_of_bounds(nearest_box)
-            # pindahkan teks ke tengah kotak
-            t.dxf.insert = (cx, cy)
-            # sesuaikan tinggi teks agar muat
-            new_h = fit_text_height(t, nearest_box, margin=0.4)
-            if new_h > 0:
-                t.dxf.height = new_h
-            moved += 1
+            # scale tinggi teks agar muat kotak
+            new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
+            t.dxf.height = new_h
 
-    st.success(f"✅ Selesai! {moved} teks berhasil dirapikan ke tengah kotak.")
+            # rotate teks sesuai kotak
+            try:
+                t.dxf.rotation = nearest_box["angle"]
+            except Exception:
+                pass
+
+            adjusted += 1
+
+    st.success(f"✅ Selesai! {adjusted} teks berhasil disesuaikan agar muat kotak.")
     return doc
 
+# =======================
+# Streamlit UI
+# =======================
 
-st.title("📐 DXF → DXF Rapikan Teks ke Tengah Kotak")
+st.title("📐 Rapikan Teks DXF Kapling (Tetap di Posisi Asal)")
 
-uploaded = st.file_uploader("Upload file DXF", type=["dxf"])
-if uploaded:
-    temp_in = tempfile.NamedTemporaryFile(delete=False, suffix=".dxf")
-    temp_in.write(uploaded.read())
-    temp_in.close()
+uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
+if uploaded_file:
     try:
-        doc = ezdxf.readfile(temp_in.name)
-    except Exception as e:
-        st.error(f"Gagal membaca DXF: {e}")
-        os.unlink(temp_in.name)
-        st.stop()
+        doc = ezdxf.readfile(uploaded_file)
+        doc = process_dxf(doc)
 
-    # proses
-    doc = process_dxf(doc)
-
-    # simpan hasil
-    temp_out = tempfile.NamedTemporaryFile(delete=False, suffix=".dxf")
-    doc.saveas(temp_out.name)
-    temp_out.close()
-
-    with open(temp_out.name, "rb") as f:
+        out_buf = io.BytesIO()
+        doc.write(out_buf)
         st.download_button(
-            "💾 Download DXF hasil",
-            f,
-            file_name="hasil_rapi.dxf",
-            mime="application/dxf",
+            "💾 Download DXF Hasil",
+            data=out_buf.getvalue(),
+            file_name="rapi_kapling.dxf",
+            mime="application/dxf"
         )
-
-    os.unlink(temp_in.name)
-    os.unlink(temp_out.name)
+    except Exception as e:
+        st.error(f"❌ Gagal memproses file DXF: {e}")
