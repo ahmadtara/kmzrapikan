@@ -6,10 +6,9 @@ from lxml import etree
 from io import BytesIO
 
 # ==============================
-# WHITELIST PREFIX
-# Tambahkan semua prefix yang dibutuhkan HPDB & DWG
+# WHITELIST PREFIX (HPDB + DWG)
 # ==============================
-VALID_PREFIXES = {"kml", "gx", "atom"}  # bisa ditambah sesuai kebutuhan
+VALID_PREFIXES = {"kml", "gx", "atom"}  # tambahkan sesuai kebutuhan
 
 # ==============================
 # TREE-BASED CLEANER
@@ -69,7 +68,7 @@ def clean_kmz(kmz_bytes, output_kml, output_kmz):
         main_kml = None
         for root_dir, dirs, files in os.walk(extract_dir):
             for f in files:
-                if f.endswith(".kml"):
+                if f.lower().endswith(".kml"):
                     main_kml = os.path.join(root_dir, f)
                     break
             if main_kml:
@@ -107,6 +106,7 @@ def extract_placemarks(kmz_bytes):
         for pm in folder.findall("kml:Placemark", ns):
             nm = pm.find("kml:name", ns)
             coord = pm.find(".//kml:coordinates", ns)
+            # === CEK KEAMANAN KOORDINAT ===
             if nm is not None and coord is not None and coord.text and coord.text.strip():
                 parts = coord.text.strip().split(",")
                 if len(parts) >= 2:
@@ -119,6 +119,7 @@ def extract_placemarks(kmz_bytes):
                             "path": new_path
                         })
                     except ValueError:
+                        # koordinat tidak valid, skip
                         continue
         return items
 
