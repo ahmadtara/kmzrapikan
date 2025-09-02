@@ -4,6 +4,7 @@ import numpy as np
 import math
 import tempfile
 import os
+import io  # fix error "name 'io' is not defined"
 
 st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 
@@ -12,6 +13,10 @@ st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
 # =======================
 
 def polyline_bounds_and_angle(poly):
+    """
+    Hitung bounding box dan sudut rotasi (derajat) dari POLYLINE/LWPOLYLINE.
+    Angle dihitung dari sisi bawah kotak relatif sumbu X.
+    """
     try:
         pts = [tuple(v) for v in poly.get_points("xy")]
     except Exception:
@@ -28,6 +33,10 @@ def polyline_bounds_and_angle(poly):
     return (xmin, ymin, xmax, ymax), angle
 
 def fit_text_height_within_box(text_entity, box_bounds, margin=0.9):
+    """
+    Skalakan tinggi teks agar muat dalam kotak, tanpa mengubah posisi.
+    margin: persentase ruang kosong dalam kotak
+    """
     x1, y1, x2, y2 = box_bounds
     box_w = abs(x2 - x1) * margin
     box_h = abs(y2 - y1) * margin
@@ -45,16 +54,15 @@ def process_dxf(doc):
     boxes = []
     for e in msp.query("LWPOLYLINE POLYLINE"):
         try:
-            if (e.dxftype() == "LWPOLYLINE" and e.closed) or \
-               (e.dxftype() == "POLYLINE" and e.is_closed):
-                bounds, angle = polyline_bounds_and_angle(e)
-                boxes.append({"bounds": bounds, "angle": angle})
+            # ambil semua polyline sebagai kotak sementara
+            bounds, angle = polyline_bounds_and_angle(e)
+            boxes.append({"bounds": bounds, "angle": angle})
         except Exception:
             continue
 
     texts = list(msp.query("TEXT MTEXT"))
 
-    st.write(f"📦 Jumlah kotak terdeteksi: {len(boxes)}")
+    st.write(f"📦 Jumlah kotak (polyline) terdeteksi: {len(boxes)}")
     st.write(f"🔤 Jumlah teks terdeteksi: {len(texts)}")
 
     adjusted = 0
@@ -64,6 +72,7 @@ def process_dxf(doc):
         except Exception:
             continue
 
+        # cari kotak terdekat
         nearest_box = None
         nearest_dist = 1e9
         for b in boxes:
@@ -76,8 +85,10 @@ def process_dxf(doc):
                 nearest_dist = dist
 
         if nearest_box:
+            # scale tinggi teks agar muat kotak
             new_h = fit_text_height_within_box(t, nearest_box["bounds"], margin=0.9)
             t.dxf.height = new_h
+            # rotate teks sesuai kotak
             try:
                 t.dxf.rotation = nearest_box["angle"]
             except Exception:
@@ -96,7 +107,7 @@ st.title("📐 Rapikan Teks DXF Kapling (Tetap di Posisi Asal)")
 uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
 
 if uploaded_file:
-    # Simpan ke temporary file supaya kompatibel ezdxf.readfile()
+    # Simpan ke temporary file agar kompatibel ezdxf.readfile()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
