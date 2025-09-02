@@ -5,3 +5,4 @@ simplekml
 ezdxf
 pyproj
 numpy
+matplotlib
