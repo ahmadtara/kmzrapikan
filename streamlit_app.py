@@ -1,135 +1,72 @@
-import streamlit as st
 import ezdxf
-import numpy as np
+from shapely.geometry import Polygon
 import math
-import tempfile
-import os
-from shapely.geometry import Polygon, Point
-from shapely.affinity import rotate, scale, translate
 
-st.set_page_config(page_title="Rapikan Teks DXF Kapling", layout="wide")
+# --- Fungsi bantu ---
+def text_polygon(x, y, text, height, rotation, width_factor=1.0):
+    """Bentuk bounding box teks sebagai polygon shapely"""
+    text_length = len(text) * height * width_factor * 0.6
+    w, h = text_length, height
+    pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
 
-# =======================
-# Helper Functions
-# =======================
-
-def polyline_to_polygon(poly):
-    """Konversi polyline/LWPOLYLINE jadi shapely Polygon"""
-    try:
-        pts = [tuple(v) for v in poly.get_points("xy")]
-    except Exception:
-        pts = [tuple(v[:2]) for v in poly.points()]
-    if pts[0] != pts[-1]:
-        pts.append(pts[0])
-    return Polygon(pts)
-
-
-def text_polygon(x, y, text, height, rotation):
-    """Bentuk polygon teks (kotak bounding box) berdasarkan posisi, tinggi, dan rotasi"""
-    # estimasi lebar teks (0.6 * tinggi * jumlah karakter)
-    width = len(text) * height * 0.6
-    box = Polygon([(0,0), (width,0), (width,height), (0,height)])
-    # transformasi: rotate → translate ke posisi (x,y)
-    box = rotate(box, rotation, origin=(0,0), use_radians=False)
-    box = translate(box, xoff=x, yoff=y)
-    return box
-
+    rad = math.radians(rotation)
+    rot_pts = [(x + px*math.cos(rad) - py*math.sin(rad),
+                y + px*math.sin(rad) + py*math.cos(rad)) for px, py in pts]
+    return Polygon(rot_pts)
 
 def fit_text_in_polygon(poly, text, init_height=2.5, margin=0.9):
     """
-    Cari tinggi & rotasi teks agar muat dalam polygon.
-    1. Coba horizontal
-    2. Kalau gagal, coba vertical (90°)
-    3. Scale down sampai muat
+    Cari posisi teks dalam polygon:
+    - mulai dari centroid
+    - kalau nabrak garis, geser sedikit
+    - auto scale & auto rotate
     """
     cx, cy = poly.centroid.x, poly.centroid.y
+    search_offsets = [(0,0),(1,0),(-1,0),(0,1),(0,-1),
+                      (1,1),(-1,1),(1,-1),(-1,-1)]
 
-    for rotation in [0, 90]:
+    for rotation in [0, 90]:  # coba horizontal dulu, lalu vertical
         h = init_height
-        for _ in range(50):  # coba iterasi scale down
-            tp = text_polygon(cx, cy, text, h, rotation)
-            if poly.contains(tp):
-                return cx, cy, h, rotation
-            h *= 0.9  # perkecil
-    # fallback: pasang di centroid, ukuran minimal
-    return cx, cy, init_height*0.3, 0
+        for _ in range(50):  # iterasi sampai dapat ukuran pas
+            for dx, dy in search_offsets:
+                tx, ty = cx + dx*h*0.3, cy + dy*h*0.3
+                tp = text_polygon(tx, ty, text, h, rotation)
+                if poly.contains(tp.buffer(-0.01)):  # cek aman dalam polygon
+                    return tx, ty, h, rotation
+            h *= 0.9  # kalau gagal, perkecil
+    return cx, cy, init_height*0.3, 0  # fallback
 
-
-def process_dxf(doc):
+# --- Proses DXF ---
+def process_dxf(input_file, output_file, texts):
+    doc = ezdxf.readfile(input_file)
     msp = doc.modelspace()
 
-    # Ambil semua polyline jadi polygon kapling
+    # Ambil polygon dari LWPOLYLINE
     polygons = []
-    for e in msp.query("LWPOLYLINE POLYLINE"):
-        try:
-            poly = polyline_to_polygon(e)
-            if poly.is_valid and poly.area > 0:
+    for e in msp.query("LWPOLYLINE"):
+        if e.closed and len(e) >= 3:
+            pts = [(p[0], p[1]) for p in e]
+            poly = Polygon(pts)
+            if poly.is_valid:
                 polygons.append(poly)
-        except Exception:
-            continue
 
-    texts = list(msp.query("TEXT MTEXT"))
+    # Tambah teks ke tiap polygon
+    for poly, text in zip(polygons, texts):
+        x, y, h, rot = fit_text_in_polygon(poly, text)
+        msp.add_text(
+            text,
+            dxfattribs={
+                "height": h,
+                "layer": "KAPLING_TEXT",
+                "color": 6  # magenta
+            }
+        ).set_pos((x, y), align="MIDDLE_CENTER").set_rotation(rot)
 
-    st.write(f"📦 Jumlah kapling (polygon) terdeteksi: {len(polygons)}")
-    st.write(f"🔤 Jumlah teks terdeteksi: {len(texts)}")
+    doc.saveas(output_file)
 
-    adjusted = 0
-    for t in texts:
-        try:
-            label = t.dxf.text
-        except Exception:
-            continue
-
-        # cari polygon terdekat ke teks
-        x, y = t.dxf.insert[0], t.dxf.insert[1]
-        p = Point(x,y)
-        nearest_poly = min(polygons, key=lambda g: p.distance(g))
-
-        # atur ulang posisi + tinggi + rotasi
-        cx, cy, h, rot = fit_text_in_polygon(nearest_poly, label, init_height=t.dxf.height)
-
-        t.dxf.insert = (cx, cy)
-        t.dxf.height = h
-        t.dxf.rotation = rot
-
-        adjusted += 1
-
-    st.success(f"✅ {adjusted} teks berhasil disesuaikan (auto scale + auto rotate supaya masuk polygon).")
-    return doc
-
-
-# =======================
-# Streamlit UI
-# =======================
-
-st.title("📐 Rapikan Teks DXF Kapling (Polygon-aware)")
-
-uploaded_file = st.file_uploader("Unggah file DXF", type=["dxf"])
-
-if uploaded_file:
-    # Simpan sementara file asli
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".dxf") as tmp:
-        tmp.write(uploaded_file.read())
-        tmp_path = tmp.name
-
-    try:
-        # Buka DXF asli
-        doc = ezdxf.readfile(tmp_path)
-        doc = process_dxf(doc)
-
-        # Simpan kembali ke file sementara (overwrite)
-        doc.saveas(tmp_path)
-
-        # Download langsung file asli yang sudah di-rapikan
-        with open(tmp_path, "rb") as f:
-            st.download_button(
-                "💾 Download DXF Hasil",
-                data=f.read(),
-                file_name="rapi_kapling.dxf",
-                mime="application/dxf"
-            )
-
-    except Exception as e:
-        st.error(f"❌ Gagal memproses file DXF: {e}")
-    finally:
-        os.unlink(tmp_path)
+# --- Contoh pemakaian ---
+if __name__ == "__main__":
+    input_dxf = "kapling_input.dxf"
+    output_dxf = "rapi_kapling.dxf"
+    texts = [f"NN-{i}" for i in range(120, 140)]  # contoh teks
+    process_dxf(input_dxf, output_dxf, texts)
