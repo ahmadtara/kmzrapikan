@@ -20,6 +20,7 @@ def clean_raw_xml(raw_xml: bytes) -> bytes:
     raw_xml = re.sub(rb"\b[a-zA-Z0-9_]+:", b"", raw_xml)
     return raw_xml
 
+# === Fungsi pembersih tree (backup kalau masih ada sisa) ===
 def clean_namespaces(elem):
     if isinstance(elem.tag, str) and ":" in elem.tag:
         elem.tag = elem.tag.split(":")[-1]  # buang prefix
@@ -32,6 +33,7 @@ def clean_namespaces(elem):
         clean_namespaces(child)
     return elem
 
+# === Fungsi utama ===
 def clean_kmz_hpdb(kmz_bytes, output_kml, output_kmz):
     extract_dir = "temp_extract"
     if os.path.exists(extract_dir):
@@ -48,10 +50,10 @@ def clean_kmz_hpdb(kmz_bytes, output_kml, output_kmz):
 
     # Cari file KML
     main_kml = None
-    for root_dir, dirs, files in os.walk(extract_dir):
+    for root, dirs, files in os.walk(extract_dir):
         for f in files:
             if f.endswith(".kml"):
-                main_kml = os.path.join(root_dir, f)
+                main_kml = os.path.join(root, f)
                 break
         if main_kml:
             break
