@@ -6,3 +6,4 @@ ezdxf
 pyproj
 numpy
 matplotlib
+networkx
