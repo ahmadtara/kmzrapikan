@@ -1,115 +1,160 @@
-# ====================================================
-# 📌 DXF Rapikan Polyline jadi Kotak + Text Magenta
-# Streamlit Version
-# ====================================================
-
 import streamlit as st
-import ezdxf
-import networkx as nx
-from shapely.geometry import Polygon, Point
-import math
-import io
+import zipfile
+import os
+import shutil
+import re
+import tempfile
+from lxml import etree
 
-# --- Fungsi bantu ---
-def text_polygon(x, y, text, height, rotation, width_factor=1.0):
-    """Bentuk bounding box teks sebagai polygon shapely"""
-    text_length = len(text) * height * width_factor * 0.6
-    w, h = text_length, height
-    pts = [(-w/2, -h/2), (w/2, -h/2), (w/2, h/2), (-w/2, h/2)]
+st.title("🗺️ Pembersih KMZ Aman")
 
-    rad = math.radians(rotation)
-    rot_pts = [(x + px*math.cos(rad) - py*math.sin(rad),
-                y + px*math.sin(rad) + py*math.cos(rad)) for px, py in pts]
-    return Polygon(rot_pts)
+menu = st.selectbox("Pilih menu", ["HPDB", "DWG"])
 
-def place_text_inside_polygon(poly, text_entity):
-    """Letakkan teks di tengah polygon, rotate jika kena garis"""
-    cx, cy = poly.centroid.x, poly.centroid.y
-    h = text_entity.dxf.height
-    text = text_entity.dxf.text
+# =========================
+# --- HPDB Cleaner ---
+# =========================
+def clean_raw_xml(raw_xml: bytes) -> bytes:
+    # Hapus semua deklarasi xmlns:xxx="..."
+    raw_xml = re.sub(rb'\s+xmlns:[a-zA-Z0-9_]+="[^"]*"', b"", raw_xml)
+    # Hapus semua prefix xxx: dari tag/atribut
+    raw_xml = re.sub(rb"\b[a-zA-Z0-9_]+:", b"", raw_xml)
+    return raw_xml
 
-    for rotation in [0, 90]:
-        tp = text_polygon(cx, cy, text, h, rotation)
-        if poly.contains(tp.buffer(-0.01)):
-            return cx, cy, rotation
+def clean_namespaces(elem):
+    if isinstance(elem.tag, str) and ":" in elem.tag:
+        elem.tag = elem.tag.split(":")[-1]  # buang prefix
+    bad_attrs = [a for a in elem.attrib if ":" in a]
+    for a in bad_attrs:
+        new_key = a.split(":")[-1]
+        elem.attrib[new_key] = elem.attrib[a]
+        del elem.attrib[a]
+    for child in elem:
+        clean_namespaces(child)
+    return elem
 
-    return cx, cy, 0
+def clean_kmz_hpdb(kmz_bytes, output_kml, output_kmz):
+    extract_dir = "temp_extract"
+    if os.path.exists(extract_dir):
+        shutil.rmtree(extract_dir)
+    os.makedirs(extract_dir, exist_ok=True)
 
-def build_graph_from_polylines(msp):
-    """Bangun graph dari semua polyline layer GARIS HOMEPASS"""
-    G = nx.Graph()
-    for e in msp.query("LWPOLYLINE"):
-        if e.dxf.layer.upper() == "GARIS HOMEPASS":
-            pts = [(p[0], p[1]) for p in e]
-            for i in range(len(pts) - 1):
-                p1, p2 = pts[i], pts[i+1]
-                G.add_edge(p1, p2)
-            if e.closed:
-                G.add_edge(pts[-1], pts[0])
-    return G
+    tmp_kmz = "uploaded.kmz"
+    with open(tmp_kmz, "wb") as f:
+        f.write(kmz_bytes)
 
-def extract_polygons_from_graph(G):
-    """Deteksi siklus/loop pada graph → jadikan polygon"""
-    cycles = nx.cycle_basis(G)
-    polygons = []
-    for cycle in cycles:
-        if len(cycle) >= 3:
-            poly = Polygon(cycle)
-            if poly.is_valid and poly.area > 1.0:
-                polygons.append(poly)
-    return polygons
+    # Ekstrak KMZ
+    with zipfile.ZipFile(tmp_kmz, 'r') as kmz:
+        kmz.extractall(extract_dir)
 
-# --- Proses DXF ---
-def process_dxf(file_bytes):
-    doc = ezdxf.read(io.BytesIO(file_bytes))
-    msp = doc.modelspace()
+    # Cari file KML
+    main_kml = None
+    for root_dir, dirs, files in os.walk(extract_dir):
+        for f in files:
+            if f.endswith(".kml"):
+                main_kml = os.path.join(root_dir, f)
+                break
+        if main_kml:
+            break
 
-    # Step 1: graph dari garis layer GARIS HOMEPASS
-    G = build_graph_from_polylines(msp)
+    if not main_kml:
+        raise FileNotFoundError("Tidak ada file .kml di dalam KMZ")
 
-    # Step 2: cari polygon dari loop
-    polygons = extract_polygons_from_graph(G)
+    # Baca dan bersihkan raw XML
+    with open(main_kml, "rb") as f:
+        raw_xml = f.read()
+    raw_xml = clean_raw_xml(raw_xml)
 
-    # Step 3: ambil semua teks FEATURE_LABEL warna magenta
-    texts = [e for e in msp.query("TEXT") 
-             if e.dxf.color == 6 and e.dxf.layer.upper() == "FEATURE_LABEL"]
+    parser = etree.XMLParser(remove_blank_text=True, recover=True)
+    root = etree.fromstring(raw_xml, parser)
+    clean_namespaces(root)
 
-    success = 0
-    for text_entity in texts:
-        # cari polygon terdekat dengan centroid teks sekarang
-        text_point = Point(text_entity.dxf.insert[0], text_entity.dxf.insert[1])
-        nearest_poly = min(polygons, key=lambda p: p.centroid.distance(text_point))
+    # Simpan KML bersih
+    tree = etree.ElementTree(root)
+    tree.write(output_kml, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
-        # rapikan posisi teks
-        x, y, rot = place_text_inside_polygon(nearest_poly, text_entity)
-        text_entity.dxf.insert = (x, y)
-        text_entity.dxf.rotation = rot
-        text_entity.dxf.color = 6
-        text_entity.dxf.layer = "FEATURE_LABEL"
-        success += 1
+    # Bungkus ulang jadi KMZ
+    with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(output_kml, os.path.basename(output_kml))
 
-    out_buf = io.BytesIO()
-    doc.write(out_buf)
-    return out_buf.getvalue(), success, len(polygons)
+    shutil.rmtree(extract_dir)
+    os.remove(tmp_kmz)
 
-# ====================================================
-# 🚀 Streamlit UI
-# ====================================================
-st.title("📌 DXF Rapikan Polyline jadi Kotak + Text Magenta")
+# =========================
+# --- DWG Cleaner ---
+# =========================
+VALID_PREFIXES = {"kml", "gx"}
 
-uploaded_file = st.file_uploader("Upload DXF file", type=["dxf"])
+def remove_bad_prefixes_tree(elem, valid_prefixes=VALID_PREFIXES):
+    for attr in list(elem.attrib):
+        if ":" in attr:
+            prefix = attr.split(":")[0]
+            if prefix not in valid_prefixes:
+                del elem.attrib[attr]
+    if isinstance(elem.tag, str):
+        if "}" in elem.tag:
+            pass
+        elif ":" in elem.tag:
+            prefix = elem.tag.split(":")[0]
+            if prefix not in valid_prefixes:
+                elem.tag = elem.tag.split(":")[-1]
+    for child in elem:
+        remove_bad_prefixes_tree(child, valid_prefixes)
 
-if uploaded_file is not None:
-    st.info("Memproses file, tunggu sebentar...")
+def clean_kml_file_dwg(input_path, output_path):
+    parser = etree.XMLParser(remove_blank_text=True, recover=True)
+    tree = etree.parse(input_path, parser)
+    root = tree.getroot()
+    remove_bad_prefixes_tree(root)
+    tree.write(output_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
-    dxf_bytes = uploaded_file.read()
-    output_bytes, count_text, count_poly = process_dxf(dxf_bytes)
+def clean_kmz_dwg(kmz_bytes, output_kml, output_kmz):
+    with tempfile.TemporaryDirectory() as extract_dir:
+        tmp_kmz = os.path.join(extract_dir, "uploaded.kmz")
+        with open(tmp_kmz, "wb") as f:
+            f.write(kmz_bytes)
+        with zipfile.ZipFile(tmp_kmz, 'r') as kmz:
+            kmz.extractall(extract_dir)
+        main_kml = None
+        for root_dir, dirs, files in os.walk(extract_dir):
+            for f in files:
+                if f.endswith(".kml"):
+                    main_kml = os.path.join(root_dir, f)
+                    break
+            if main_kml:
+                break
+        if not main_kml:
+            raise FileNotFoundError("Tidak ada file .kml di dalam KMZ")
+        clean_kml_file_dwg(main_kml, output_kml)
+        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
+            for folder, _, files in os.walk(extract_dir):
+                for file in files:
+                    file_path = os.path.join(folder, file)
+                    arcname = os.path.relpath(file_path, extract_dir)
+                    zf.write(file_path, arcname)
 
-    st.success(f"✅ {count_text} teks FEATURE_LABEL dirapikan ke {count_poly} kotak hasil deteksi")
+# =========================
+# --- Streamlit Upload & Action ---
+# =========================
+uploaded_file = st.file_uploader("Upload file KMZ", type=["kmz"])
 
-    st.download_button(
-        label="⬇️ Download DXF Hasil",
-        data=output_bytes,
-        file_name="rapi_homepass.dxf",
-        mime="application/dxf"
-    )
+if uploaded_file:
+    output_kml = "clean_output.kml"
+    output_kmz = "clean_output.kmz"
+
+    if st.button("🚀 Bersihkan"):
+        try:
+            if menu == "HPDB":
+                clean_kmz_hpdb(uploaded_file.read(), output_kml, output_kmz)
+            else:
+                clean_kmz_dwg(uploaded_file.read(), output_kml, output_kmz)
+
+            st.success("✅ File berhasil dibersihkan!")
+
+            with open(output_kml, "rb") as f:
+                st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
+
+            with open(output_kmz, "rb") as f:
+                st.download_button("⬇️ Download KMZ Bersih", f, file_name="clean.kmz")
+
+        except Exception as e:
+            st.error(f"Gagal memproses: {e}")
