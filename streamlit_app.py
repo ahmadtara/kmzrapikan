@@ -5,7 +5,7 @@ import tempfile
 from lxml import etree
 
 # Daftar prefix resmi yang ingin dipertahankan
-VALID_PREFIXES = {"kml", "gx"}
+VALID_PREFIXES = {"kml", "gx", "atom"}
 
 # === Fungsi pembersih tree aman ===
 def remove_bad_prefixes_tree(elem, valid_prefixes=VALID_PREFIXES):
@@ -41,6 +41,20 @@ def clean_kml_file(input_path, output_path):
 
     # Bersihkan prefix/atribut tak dikenal
     remove_bad_prefixes_tree(root)
+
+    # === Tambahkan namespace resmi ke root <kml> ===
+    if root.tag.endswith("kml") or root.tag.endswith("}kml"):
+        nsmap = root.nsmap.copy()
+
+        # namespace default KML
+        if None not in nsmap:
+            root.set("xmlns", "http://www.opengis.net/kml/2.2")
+        # gx (Google extension)
+        if "gx" not in nsmap:
+            root.set("xmlns:gx", "http://www.google.com/kml/ext/2.2")
+        # atom (kadang dipakai di <atom:author> / <atom:link>)
+        if "atom" not in nsmap:
+            root.set("xmlns:atom", "http://www.w3.org/2005/Atom")
 
     tree.write(output_path, pretty_print=True, xml_declaration=True, encoding="UTF-8")
 
