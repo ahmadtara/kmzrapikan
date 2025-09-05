@@ -1,99 +1,74 @@
 import streamlit as st
+import tempfile, os
+from lxml import etree as ET
+from shapely.geometry import Point, Polygon
 import zipfile
-import os
-import re
-import tempfile
 
-# --- Fungsi pembersih raw XML ---
-def clean_raw_xml(raw_xml: bytes) -> bytes:
-    """
-    Bersihkan deklarasi namespace aneh & prefix asing dari XML,
-    tapi pertahankan isi Placemark, Polygon, LineString, dll.
-    """
-    # Hapus semua deklarasi xmlns selain default & gx
-    raw_xml = re.sub(rb'\s+xmlns:(?!gx)[a-zA-Z0-9_]+="[^"]*"', b"", raw_xml)
+st.title("📍 Pindahkan HP ke Tengah Kotak (Path 4 Titik)")
 
-    # Hapus prefix asing dari tag (contoh: ns2:Placemark -> Placemark)
-    raw_xml = re.sub(rb"<(/?)[a-zA-Z0-9_]+:", rb"<\1", raw_xml)
+uploaded_file = st.file_uploader("Upload file KML", type=["kml"])
 
-    # Hapus prefix asing dari atribut (contoh: ns2:id="x" -> id="x")
-    raw_xml = re.sub(rb"\s+[a-zA-Z0-9_]+:([a-zA-Z0-9_]+=)", rb" \1", raw_xml)
+if uploaded_file is not None:
+    # Simpan file sementara
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".kml") as tmp:
+        tmp.write(uploaded_file.read())
+        kml_file = tmp.name
 
-    return raw_xml
+    # Parse file
+    parser = ET.XMLParser(recover=True, encoding="utf-8")
+    tree = ET.parse(kml_file, parser=parser)
+    root = tree.getroot()
+    ns = {"kml": "http://www.opengis.net/kml/2.2"}
 
-# --- Fungsi utama untuk bersihkan KMZ ---
-def clean_kmz(kmz_bytes, output_kml, output_kmz):
-    with tempfile.TemporaryDirectory() as extract_dir:
-        tmp_kmz = os.path.join(extract_dir, "uploaded.kmz")
-        with open(tmp_kmz, "wb") as f:
-            f.write(kmz_bytes)
+    # --- Ambil kotak dari folder KOTAK ---
+    kotak_polygons = []
+    kotak_centroids = []
 
-        # Ekstrak KMZ
-        with zipfile.ZipFile(tmp_kmz, 'r') as kmz:
-            kmz.extractall(extract_dir)
+    for folder in root.findall(".//kml:Folder", ns):
+        fname = folder.find("kml:name", ns)
+        if fname is not None and fname.text == "KOTAK":
+            for placemark in folder.findall("kml:Placemark", ns):
+                line = placemark.find(".//kml:LineString", ns)
+                if line is not None:
+                    coords_text = line.find("kml:coordinates", ns).text.strip()
+                    coords = [(float(x.split(",")[0]), float(x.split(",")[1])) 
+                              for x in coords_text.split()]
+                    if len(coords) == 4:  # path 4 titik → kotak
+                        # bentuk polygon manual
+                        poly = Polygon(coords + [coords[0]])  # tutup poly
+                        kotak_polygons.append(poly)
+                        kotak_centroids.append(poly.centroid)
 
-        # Cari file KML utama
-        main_kml = None
-        for root, dirs, files in os.walk(extract_dir):
-            for f in files:
-                if f.endswith(".kml"):
-                    main_kml = os.path.join(root, f)
-                    break
-            if main_kml:
+    # --- Ambil HP ---
+    hp_points = []
+    for folder in root.findall(".//kml:Folder", ns):
+        fname = folder.find("kml:name", ns)
+        if fname is not None and fname.text == "HP":
+            for placemark in folder.findall("kml:Placemark", ns):
+                point = placemark.find(".//kml:Point", ns)
+                if point is not None:
+                    coords_text = point.find("kml:coordinates", ns).text.strip()
+                    lon, lat, *_ = map(float, coords_text.split(","))
+                    hp_points.append((placemark, Point(lon, lat)))
+
+    # --- Pindahkan HP ke centroid kotak ---
+    moved_count = 0
+    for placemark, pt in hp_points:
+        for poly, centroid in zip(kotak_polygons, kotak_centroids):
+            if poly.contains(pt):
+                new_coords = f"{centroid.x},{centroid.y},0"
+                point_el = placemark.find(".//kml:Point/kml:coordinates", ns)
+                if point_el is not None:
+                    point_el.text = new_coords
+                    moved_count += 1
                 break
 
-        if not main_kml:
-            raise FileNotFoundError("❌ Tidak ada file .kml di dalam KMZ")
+    # Simpan hasil
+    out_dir = tempfile.mkdtemp()
+    new_kml = os.path.join(out_dir, "hp_mid_kotak.kml")
+    tree.write(new_kml, encoding="utf-8", xml_declaration=True)
 
-        # Baca & bersihkan raw xml
-        with open(main_kml, "rb") as f:
-            raw_xml = f.read()
+    with open(new_kml, "rb") as f:
+        st.download_button("📥 Download Hasil KML", f, file_name="hp_mid_kotak.kml")
 
-        cleaned = clean_raw_xml(raw_xml)
-
-        # Tambahkan namespace standar di root <kml>
-        cleaned = re.sub(
-            rb"<kml[^>]*>",
-            b'<kml xmlns="http://www.opengis.net/kml/2.2" '
-            b'xmlns:gx="http://www.google.com/kml/ext/2.2">',
-            cleaned,
-            count=1
-        )
-
-        # Simpan hasil KML
-        with open(output_kml, "wb") as f:
-            f.write(cleaned)
-
-        # Bungkus ulang jadi KMZ (replace KML lama dengan yang sudah bersih)
-        with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
-            for folder, _, files in os.walk(extract_dir):
-                for file in files:
-                    file_path = os.path.join(folder, file)
-                    arcname = os.path.relpath(file_path, extract_dir)
-                    if file_path == main_kml:
-                        zf.write(output_kml, arcname)  # tulis versi bersih
-                    else:
-                        zf.write(file_path, arcname)
-
-# --- Streamlit App ---
-st.title("🗺️ Pembersih KMZ Kotor → Jadi Bersih")
-
-uploaded_file = st.file_uploader("Upload file KMZ kotor", type=["kmz"])
-
-if uploaded_file:
-    output_kml = "clean_output.kml"
-    output_kmz = "clean_output.kmz"
-
-    if st.button("🚀 Bersihkan"):
-        try:
-            clean_kmz(uploaded_file.read(), output_kml, output_kmz)
-            st.success("✅ File berhasil dibersihkan tanpa merusak isi")
-
-            with open(output_kml, "rb") as f:
-                st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
-
-            with open(output_kmz, "rb") as f:
-                st.download_button("⬇️ Download KMZ Bersih", f, file_name="clean.kmz")
-
-        except Exception as e:
-            st.error(f"Gagal memproses: {e}")
+    st.success(f"✅ Selesai! {moved_count} titik HP dipindahkan ke tengah kotak.")
