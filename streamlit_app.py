@@ -1,8 +1,8 @@
+import streamlit as st
 import zipfile
 import os
 import re
 import tempfile
-from lxml import etree
 
 # --- Fungsi pembersih raw XML ---
 def clean_raw_xml(raw_xml: bytes) -> bytes:
@@ -16,16 +16,20 @@ def clean_raw_xml(raw_xml: bytes) -> bytes:
     # Hapus prefix asing dari tag (contoh: ns2:Placemark -> Placemark)
     raw_xml = re.sub(rb"<(/?)[a-zA-Z0-9_]+:", rb"<\1", raw_xml)
 
-    # Hapus prefix asing dari atribut
-    raw_xml = re.sub(rb"\s+[a-zA-Z0-9_]+:[a-zA-Z0-9_]+=", lambda m: b" " + m.group(0).split(b":")[-1], raw_xml)
+    # Hapus prefix asing dari atribut (contoh: ns2:id="x" -> id="x")
+    raw_xml = re.sub(rb"\s+[a-zA-Z0-9_]+:([a-zA-Z0-9_]+=)", rb" \1", raw_xml)
 
     return raw_xml
 
 # --- Fungsi utama untuk bersihkan KMZ ---
-def clean_kmz(kmz_path, output_kml, output_kmz):
+def clean_kmz(kmz_bytes, output_kml, output_kmz):
     with tempfile.TemporaryDirectory() as extract_dir:
+        tmp_kmz = os.path.join(extract_dir, "uploaded.kmz")
+        with open(tmp_kmz, "wb") as f:
+            f.write(kmz_bytes)
+
         # Ekstrak KMZ
-        with zipfile.ZipFile(kmz_path, 'r') as kmz:
+        with zipfile.ZipFile(tmp_kmz, 'r') as kmz:
             kmz.extractall(extract_dir)
 
         # Cari file KML utama
@@ -41,7 +45,7 @@ def clean_kmz(kmz_path, output_kml, output_kmz):
         if not main_kml:
             raise FileNotFoundError("❌ Tidak ada file .kml di dalam KMZ")
 
-        # Baca & bersihkan
+        # Baca & bersihkan raw xml
         with open(main_kml, "rb") as f:
             raw_xml = f.read()
 
@@ -60,20 +64,36 @@ def clean_kmz(kmz_path, output_kml, output_kmz):
         with open(output_kml, "wb") as f:
             f.write(cleaned)
 
-        # Bungkus ulang jadi KMZ
+        # Bungkus ulang jadi KMZ (replace KML lama dengan yang sudah bersih)
         with zipfile.ZipFile(output_kmz, "w", zipfile.ZIP_DEFLATED) as zf:
             for folder, _, files in os.walk(extract_dir):
                 for file in files:
                     file_path = os.path.join(folder, file)
                     arcname = os.path.relpath(file_path, extract_dir)
-                    # ganti file utama KML dengan versi bersih
                     if file_path == main_kml:
-                        zf.write(output_kml, arcname)
+                        zf.write(output_kml, arcname)  # tulis versi bersih
                     else:
                         zf.write(file_path, arcname)
 
+# --- Streamlit App ---
+st.title("🗺️ Pembersih KMZ Kotor → Jadi Bersih")
 
-# --- Contoh penggunaan ---
-if __name__ == "__main__":
-    clean_kmz("contoh kml kotor.KMZ", "output_bersih.kml", "output_bersih.kmz")
-    print("✅ KML berhasil dibersihkan tanpa merusak isi")
+uploaded_file = st.file_uploader("Upload file KMZ kotor", type=["kmz"])
+
+if uploaded_file:
+    output_kml = "clean_output.kml"
+    output_kmz = "clean_output.kmz"
+
+    if st.button("🚀 Bersihkan"):
+        try:
+            clean_kmz(uploaded_file.read(), output_kml, output_kmz)
+            st.success("✅ File berhasil dibersihkan tanpa merusak isi")
+
+            with open(output_kml, "rb") as f:
+                st.download_button("⬇️ Download KML Bersih", f, file_name="clean.kml")
+
+            with open(output_kmz, "rb") as f:
+                st.download_button("⬇️ Download KMZ Bersih", f, file_name="clean.kmz")
+
+        except Exception as e:
+            st.error(f"Gagal memproses: {e}")
